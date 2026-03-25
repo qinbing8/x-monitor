@@ -96,6 +96,29 @@ export const FIXTURE_ANALYZE_MARKDOWN = [
   '- @bob：未在抓取结果中观察到符合条件的推文，日报未做额外猜测。',
 ].join('\n');
 
+export const FIXTURE_ANALYZE_MARKDOWN_PART1 = [
+  '# X 日报 | 2026-03-23',
+  '',
+  '## 今日要点摘要（Deep Brief）',
+  '- 开发者工具仍是今天最值得看的主题，`@alice` 连发两条与 agent tracing 和评测工作流相关的高价值内容。',
+  '',
+  '## 编辑精选（Editor\'s Choice）',
+  '- ★★★ @alice',
+  '  - 发布新的 tracing CLI，并给出可直接查看的 Demo 链接。',
+  '  - https://x.com/alice/status/190001',
+].join('\n');
+
+export const FIXTURE_ANALYZE_MARKDOWN_PART2 = [
+  '',
+  '',
+  '## 高价值推文完整清单',
+  '- ★★★ @alice 发布 tracing CLI。https://x.com/alice/status/190001',
+  '- ★★ @alice 引用 eval-driven development 文章。https://x.com/alice/status/190002',
+  '',
+  '## 抓取覆盖与缺口',
+  '- @bob：未观察到符合条件的推文。',
+].join('\n');
+
 export async function createMockSkillFixture() {
   const root = await mkdtemp(join(tmpdir(), 'x-monitor-fixture-'));
   const skillRoot = join(root, 'skill');
@@ -238,6 +261,22 @@ export function createCompletionFetchSequence(contents) {
       status: 200,
       json: async () => ({
         choices: [{ message: { content } }],
+      }),
+    };
+  };
+}
+
+export function createCompletionFetchSequenceWithFinishReason(items) {
+  let index = 0;
+  return async () => {
+    const safeItems = Array.isArray(items) && items.length > 0 ? items : [{ content: '', finishReason: 'stop' }];
+    const item = safeItems[Math.min(index, safeItems.length - 1)];
+    index += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: item.content }, finish_reason: item.finishReason }],
       }),
     };
   };

@@ -19,6 +19,8 @@ import { buildTweetEvidenceBlock, runAnalyze, resolveAnalyzeTimeoutMs } from '..
 import { parseArgs } from '../scripts/run.mjs';
 import {
   FIXTURE_ANALYZE_MARKDOWN,
+  FIXTURE_ANALYZE_MARKDOWN_PART1,
+  FIXTURE_ANALYZE_MARKDOWN_PART2,
   FIXTURE_INVALID_FETCH_RESPONSE,
   FIXTURE_OUT_OF_WINDOW_FETCH_RESPONSE,
   FIXTURE_OPENCLAW,
@@ -31,6 +33,7 @@ import {
   FIXTURE_TWEET_FETCH_RESPONSE,
   createCompletionFetch,
   createCompletionFetchSequence,
+  createCompletionFetchSequenceWithFinishReason,
   createMockSkillFixture,
   readJson,
   readText,
@@ -698,6 +701,73 @@ test('runFetch with --skip-precheck bypasses precheck and fetches all accounts',
     assert.equal(fetchResult.meta.precheckEnabled, false);
     assert.equal(fetchResult.meta.dormantSeedCount, 0);
     assert.equal(fetchResult.accounts.filter((a) => a.status === 'dormant_skipped').length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze continues when LLM response is truncated and concatenates parts', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeFetch = createCompletionFetchSequenceWithFinishReason([
+      { content: FIXTURE_ANALYZE_MARKDOWN_PART1, finishReason: 'length' },
+      { content: FIXTURE_ANALYZE_MARKDOWN_PART2, finishReason: 'stop' },
+    ]);
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: analyzeFetch,
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.meta.continuationRounds, 1);
+    assert.equal(analyzeResult.meta.truncated, false);
+
+    const expectedCombined = FIXTURE_ANALYZE_MARKDOWN_PART1 + FIXTURE_ANALYZE_MARKDOWN_PART2;
+    assert.equal(analyzeResult.answer.markdown, expectedCombined);
+    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /抓取覆盖与缺口/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze stops after maxContinuations and marks result as truncated', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeFetch = createCompletionFetchSequenceWithFinishReason([
+      { content: 'Part 1. ', finishReason: 'length' },
+      { content: 'Part 2. ', finishReason: 'length' },
+      { content: 'Part 3.', finishReason: 'length' },
+    ]);
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: analyzeFetch,
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.meta.continuationRounds, 2);
+    assert.equal(analyzeResult.meta.truncated, true);
+    assert.match(analyzeResult.answer.markdown, /Part 1/);
+    assert.match(analyzeResult.answer.markdown, /Part 2/);
+    assert.match(analyzeResult.answer.markdown, /Part 3/);
   } finally {
     await fixture.cleanup();
   }

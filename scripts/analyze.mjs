@@ -21,6 +21,8 @@ const NOISE_PATTERNS = [
   /example\s+(tweet|post|content)/i,
 ];
 const MIN_SIGNAL_TEXT_LENGTH = 15;
+const CONTINUATION_PROMPT = '请继续输出，从上次中断的地方接续，不要重复已输出的内容。';
+const OVERLAP_CHECK_LENGTH = 200;
 
 export function filterNoiseTweets(items) {
   const signal = [];
@@ -162,6 +164,56 @@ export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], 
   return JSON.stringify(evidence, null, 2);
 }
 
+export async function runAnalysisWithContinuation({ profile, messages, fetchImpl, timeoutMs, maxContinuations = 2 }) {
+  let accumulatedText = '';
+  let continuationRounds = 0;
+  let lastFinishReason = null;
+  const currentMessages = [...messages];
+
+  for (let round = 0; round <= maxContinuations; round += 1) {
+    const completion = await withRetry(
+      () => postChatCompletions({
+        baseUrl: profile.provider.baseUrl,
+        apiKey: profile.provider.apiKey,
+        model: profile.modelId,
+        timeoutMs,
+        temperature: profile.temperature,
+        maxTokens: profile.maxOutputTokens,
+        messages: currentMessages,
+        fetchImpl,
+      }),
+      profile.retry,
+    );
+
+    let chunkText = completion.text;
+    lastFinishReason = completion.diagnostics?.finishReason ?? null;
+
+    if (round > 0 && accumulatedText.length > 0 && chunkText.length > 0) {
+      const checkLen = Math.min(OVERLAP_CHECK_LENGTH, accumulatedText.length, chunkText.length);
+      for (let len = checkLen; len > 0; len -= 1) {
+        if (accumulatedText.endsWith(chunkText.slice(0, len))) {
+          chunkText = chunkText.slice(len);
+          break;
+        }
+      }
+    }
+
+    accumulatedText += chunkText;
+
+    if (lastFinishReason !== 'length' || round >= maxContinuations) break;
+
+    currentMessages.push({ role: 'assistant', content: completion.text });
+    currentMessages.push({ role: 'user', content: CONTINUATION_PROMPT });
+    continuationRounds += 1;
+  }
+
+  return {
+    text: accumulatedText,
+    continuationRounds,
+    truncated: lastFinishReason === 'length',
+  };
+}
+
 export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl } = {}) {
   const { config, skillRoot } = await loadConfig(configPath);
   const sourceDocs = await loadSourceDocuments(config, skillRoot);
@@ -210,21 +262,15 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
   };
   const analyzeInputPath = await writeJsonArtifact(runDir, config.runtime.artifacts.analyzeInput, analyzeInput);
 
-  const completion = await withRetry(
-    () => postChatCompletions({
-      baseUrl: profile.provider.baseUrl,
-      apiKey: profile.provider.apiKey,
-      model: profile.modelId,
-      timeoutMs: effectiveTimeoutMs,
-      temperature: profile.temperature,
-      maxTokens: profile.maxOutputTokens,
-      messages: [{ role: 'user', content: renderedPrompt }],
-      fetchImpl,
-    }),
-    profile.retry,
-  );
+  const continuationResult = await runAnalysisWithContinuation({
+    profile,
+    messages: [{ role: 'user', content: renderedPrompt }],
+    fetchImpl,
+    timeoutMs: effectiveTimeoutMs,
+    maxContinuations: profile.maxContinuations ?? 2,
+  });
 
-  const outputText = completion.text.trim();
+  const outputText = continuationResult.text.trim();
   const coverage = summarizeCoverage(accounts);
   const quality = assessBriefQuality({
     coverage,
@@ -243,6 +289,8 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
       tweetCount: items.length,
       signalTweetCount: signalItems.length,
       noiseTweetCount: noiseItems.length,
+      continuationRounds: continuationResult.continuationRounds,
+      truncated: continuationResult.truncated,
       coverage,
     },
     answer: {

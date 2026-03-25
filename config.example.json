@@ -57,7 +57,8 @@
         },
         "concurrency": 1,
         "temperature": 0.2,
-        "maxOutputTokens": 4000,
+        "maxOutputTokens": 8000,
+        "maxContinuations": 2,
         "promptFile": "assets/prompts/gpt-analyze.txt"
       },
       "claude-default": {
@@ -71,7 +72,8 @@
         },
         "concurrency": 1,
         "temperature": 0.2,
-        "maxOutputTokens": 4000,
+        "maxOutputTokens": 8000,
+        "maxContinuations": 2,
         "promptFile": "assets/prompts/gpt-analyze.txt"
       }
     }
