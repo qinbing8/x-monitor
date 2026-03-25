@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "defaults": {
+    "mode": "run",
+    "outputDir": "./data",
+    "logLevel": "info"
+  },
+  "sources": {
+    "credentialFiles": {
+      "search": "C:/Users/bing/.openclaw/credentials/search.json",
+      "openclaw": "C:/Users/bing/.openclaw/openclaw.json"
+    }
+  },
+  "fetch": {
+    "activeProfile": "grok-default",
+    "profiles": {
+      "grok-default": {
+        "providerRef": "grok",
+        "timeoutMs": 60000,
+        "retry": {
+          "maxAttempts": 3,
+          "backoffMs": 1500
+        },
+        "concurrency": 2,
+        "batchSize": 1,
+        "refetchOnStatuses": ["no_tweets_found", "incomplete", "fetch_failed", "soft_failed"],
+        "refetchMaxRounds": 3,
+        "refetchBatchSize": 1,
+        "refetchConcurrency": 2,
+        "timeWindowHours": 24,
+        "includeTweetTypes": ["original", "repost", "quote"],
+        "excludePureReplies": true,
+        "seedCsvPath": "./X 列表关注者.csv",
+        "promptFile": "assets/prompts/grok-fetch.txt",
+        "precheck": {
+          "enabled": true,
+          "dormantThresholdDays": 7,
+          "batchSize": 10,
+          "timeoutMs": 30000,
+          "maxOutputTokens": 500,
+          "promptFile": "assets/prompts/grok-precheck.txt"
+        }
+      }
+    }
+  },
+  "analysis": {
+    "activeProfile": "gpt-default",
+    "profiles": {
+      "gpt-default": {
+        "providerRef": "gpt",
+        "modelRef": "gpt-main",
+        "apiProtocol": "openai-compatible",
+        "timeoutMs": 180000,
+        "retry": {
+          "maxAttempts": 2,
+          "backoffMs": 2500
+        },
+        "concurrency": 1,
+        "temperature": 0.2,
+        "maxOutputTokens": 4000,
+        "promptFile": "assets/prompts/gpt-analyze.txt"
+      },
+      "claude-default": {
+        "providerRef": "claude",
+        "modelRef": "claude-main",
+        "apiProtocol": "openai-compatible",
+        "timeoutMs": 180000,
+        "retry": {
+          "maxAttempts": 2,
+          "backoffMs": 2500
+        },
+        "concurrency": 1,
+        "temperature": 0.2,
+        "maxOutputTokens": 4000,
+        "promptFile": "assets/prompts/gpt-analyze.txt"
+      }
+    }
+  },
+  "providers": {
+    "grok": {
+      "role": "fetch",
+      "configSource": {
+        "fileRef": "search",
+        "jsonPath": "$.grok"
+      },
+      "mapping": {
+        "baseUrl": "apiUrl",
+        "apiKey": "apiKey",
+        "defaultModel": "model"
+      }
+    },
+    "gpt": {
+      "role": "analysis",
+      "configSource": {
+        "fileRef": "openclaw",
+        "jsonPath": "$.models.providers.router-gpt"
+      },
+      "mapping": {
+        "baseUrl": "baseUrl",
+        "apiKey": "apiKey",
+        "models": "models"
+      }
+    },
+    "claude": {
+      "role": "analysis",
+      "configSource": {
+        "fileRef": "openclaw",
+        "jsonPath": "$.models.providers.anyrouter"
+      },
+      "mapping": {
+        "baseUrl": "baseUrl",
+        "apiKey": "apiKey",
+        "models": "models"
+      }
+    }
+  },
+  "models": {
+    "gpt-main": {
+      "providerRef": "gpt",
+      "modelId": "gpt-5.4(xhigh)"
+    },
+    "claude-main": {
+      "providerRef": "claude",
+      "modelId": "claude-sonnet-4-6"
+    }
+  },
+  "runtime": {
+    "pipeline": ["fetch", "analyze"],
+    "artifacts": {
+      "fetchInput": "fetch.input.json",
+      "fetchRaw": "fetch.raw.json",
+      "fetchRawCsv": "fetch.raw.csv",
+      "fetchResult": "fetch.result.json",
+      "analyzeInput": "analyze.input.json",
+      "analyzeResult": "analyze.result.json",
+      "finalReport": "final.md"
+    }
+  }
+}

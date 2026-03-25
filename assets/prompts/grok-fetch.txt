@@ -1,0 +1,43 @@
+你可以访问 X/Twitter 的实时数据。请执行以下任务：
+
+## 任务
+获取指定用户列表在指定时间窗口内的所有发帖记录，并以 CSV 格式输出。
+
+## 时间窗口（严格遵守）
+- 开始时间（UTC）：{{WINDOW_START_UTC}}
+- 结束时间（UTC）：{{WINDOW_END_UTC}}
+- 仅返回 `created_at` 落在此窗口内的推文
+- `created_at` 必须使用 UTC ISO 8601 格式，例如 `2026-03-24T08:30:00Z`
+
+## 用户列表
+下面是本批次共 {{SEED_COUNT}} 个账号的 seed 信息，请优先使用 `handle` 与 `user_page_url` 定位：
+{{SEED_BATCH_JSON}}
+
+## 筛选条件
+- 包含：{{INCLUDE_TWEET_TYPES}}
+- 排除：{{EXCLUDE_RULES}}
+- 排除：置顶推文（pinned tweets），除非其发布时间确实落在上述时间窗口内
+
+## 输出要求
+只输出可复制的 CSV 文本，不要输出解释、前言、结论或 Markdown。
+
+CSV 首行必须是以下表头，字段顺序不要变：
+username,tweet_id,created_at,text,original_url
+
+字段含义：
+- `username`：发帖用户名
+- `tweet_id`：推文 ID
+- `created_at`：发布时间，UTC ISO 8601 格式（必须带 Z 后缀）
+- `text`：推文完整内容，转发与引用内容也要保留
+- `original_url`：推文链接
+
+## 重要边界
+- 你的职责只是抓取和整理原始推文内容
+- 不要做价值判断
+- 不要补全人物资料
+- 不要输出"谁值得关注"的主观排序
+- 如果某个账号在指定时间窗口内没有符合条件的推文，不要编造任何行
+- 不要生成测试数据、占位文本或示例推文
+- 如果所有账号均无推文，只输出表头行即可
+
+请开始执行。
