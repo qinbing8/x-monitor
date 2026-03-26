@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { loadConfig, loadSourceDocuments } from '../scripts/config-loader.mjs';
 import { resolveAnalysisProfile } from '../scripts/provider-resolver.mjs';
@@ -68,12 +69,14 @@ test('prepareDailyRoster bootstraps a daily roster and score state from the mast
     assert.equal(summary.dailyCount, 2);
 
     const dailyCsv = await readText(summary.dailyCsvPath);
-    assert.match(dailyCsv, /UserPageURL,Handle,Name,PostCount/);
+    assert.match(dailyCsv, /TweetID,UserPageURL,Handle,Name,PostCount/);
+    assert.match(dailyCsv, /1599634054919245824/);
     assert.match(dailyCsv, /https:\/\/x\.com\/alice/);
     assert.match(dailyCsv, /https:\/\/x\.com\/bob/);
 
     const scoreState = await readJson(summary.scoreFilePath);
     assert.equal(scoreState.accounts.length, 2);
+    assert.equal(scoreState.accounts[0].sourceTweetId, '1599634054919245824');
     assert.equal(scoreState.accounts[0].score, 2);
     assert.equal(scoreState.accounts[0].tier, 'every_other_day');
     assert.equal(scoreState.accounts[0].lastSelectedAt, '2026-03-23');
@@ -94,7 +97,8 @@ test('prepareDailyRoster respects cadence tiers when selecting the next daily ro
         meta: {},
         accounts: [
           {
-            handle: 'alice',
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice_legacy_handle',
             displayName: 'Alice Maker',
             userPageUrl: 'https://x.com/alice',
             postCount: 12,
@@ -111,6 +115,7 @@ test('prepareDailyRoster respects cadence tiers when selecting the next daily ro
             unseen: false,
           },
           {
+            sourceTweetId: '1439790545048457225',
             handle: 'bob',
             displayName: 'Bob Chen',
             userPageUrl: 'https://x.com/bob',
@@ -137,6 +142,7 @@ test('prepareDailyRoster respects cadence tiers when selecting the next daily ro
     });
 
     const dailyCsv = await readText(summary.dailyCsvPath);
+    assert.match(dailyCsv, /1599634054919245824/);
     assert.match(dailyCsv, /alice/);
     assert.doesNotMatch(dailyCsv, /bob/);
     assert.equal(summary.dailyCount, 1);
@@ -200,6 +206,57 @@ test('runRosterScoring updates account scores from GPT decisions without changin
     const scoreResult = await readJson(summary.rosterScoreResultPath);
     assert.equal(scoreResult.decisionCount, 1);
     assert.equal(scoreResult.decisions[0].handle, 'alice');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runRosterScoring lowers account frequency when GPT flags repeated low-value chatter', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    await prepareDailyRoster({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+    });
+
+    const fetchSummary = await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const { config: loadedConfig, skillRoot } = await loadConfig(fixture.configPath);
+    const sourceDocs = await loadSourceDocuments(loadedConfig, skillRoot);
+    const profile = resolveAnalysisProfile(loadedConfig, sourceDocs, 'gpt-default');
+    const fetchResult = await readJson(fetchSummary.fetchResultPath);
+    const scoringResponse = JSON.stringify([
+      {
+        handle: 'alice',
+        high_value_tweet_count: 0,
+        low_value_chat_count: 3,
+        reason: 'Mostly short chatter without clear information gain.',
+      },
+    ], null, 2);
+
+    await runRosterScoring({
+      config: loadedConfig,
+      skillRoot,
+      runDate: '2026-03-23',
+      fetchResult,
+      profile,
+      fetchImpl: createCompletionFetch(scoringResponse),
+      runDir: fetchSummary.runDir,
+    });
+
+    const scoreState = await readJson(join(fixture.skillRoot, 'account-score.json'));
+    const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
+    assert.equal(alice.score, 0);
+    assert.equal(alice.tier, 'cold');
+    assert.equal(alice.lowValueChatCount, 3);
   } finally {
     await fixture.cleanup();
   }

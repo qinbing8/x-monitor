@@ -219,6 +219,15 @@ function trimString(value) {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
 }
 
+function buildSeedIdentityKey(seed) {
+  const sourceTweetId = trimString(seed?.sourceTweetId);
+  if (sourceTweetId) return `tweet:${sourceTweetId}`;
+  const handle = trimString(seed?.handle).toLowerCase();
+  const userPageUrl = trimString(seed?.userPageUrl).toLowerCase();
+  const displayName = trimString(seed?.displayName).toLowerCase();
+  return `${handle}|${userPageUrl}|${displayName}`;
+}
+
 function normalizeUrl(value) {
   const text = trimString(value);
   return text.replace(/\/+$/, '');
@@ -295,6 +304,7 @@ function serializeCsv(records, headers = REQUIRED_TWEET_FIELDS) {
 function buildPromptSeedRecords(seeds) {
   return seeds.map((seed) => ({
     seed_id: seed.seedId,
+    source_tweet_id: seed.sourceTweetId || null,
     handle: seed.handle || null,
     display_name: seed.displayName || null,
     user_page_url: seed.userPageUrl || null,
@@ -532,7 +542,7 @@ export function normalizeSeedAccounts(records) {
       sourceType: 'account_seed',
     };
     if (!item.handle && !item.userPageUrl && !item.displayName && !item.bio) continue;
-    const dedupeKey = `${item.handle.toLowerCase()}|${item.userPageUrl.toLowerCase()}|${item.displayName.toLowerCase()}`;
+    const dedupeKey = buildSeedIdentityKey(item);
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     normalized.push(item);
@@ -607,6 +617,7 @@ export function normalizeTweetRecords(seeds, records, batchId, options = {}) {
       batchId,
       source: {
         seedId: seed.seedId,
+        sourceTweetId: seed.sourceTweetId || null,
         csvRowNumber: seed.csvRowNumber,
         seedHandle: seed.handle,
         displayName: seed.displayName,
@@ -625,6 +636,7 @@ export function summarizeBatchCoverage(seeds, items, rowIssues, batchId, parseEr
     const status = isSoftFail ? 'soft_failed' : 'fetch_failed';
     return seeds.map((seed) => ({
       seedId: seed.seedId,
+      sourceTweetId: seed.sourceTweetId || null,
       handle: seed.handle,
       displayName: seed.displayName,
       userPageUrl: seed.userPageUrl,
@@ -669,6 +681,7 @@ export function summarizeBatchCoverage(seeds, items, rowIssues, batchId, parseEr
 
     return {
       seedId: seed.seedId,
+      sourceTweetId: seed.sourceTweetId || null,
       handle: seed.handle,
       displayName: seed.displayName,
       userPageUrl: seed.userPageUrl,
@@ -927,7 +940,7 @@ function recordSeedAttempts(seedAttempts, seedById, batchResults) {
 function summarizeSeedAttempts(seed, attempts) {
   const uniqueItems = uniqueByKey(
     attempts.flatMap((attempt) => attempt.items),
-    (item) => `${item.tweetId}|${item.originalUrl}`,
+    (item) => item.tweetId,
   );
   const uniqueRowIssues = uniqueByKey(
     attempts.flatMap((attempt) => attempt.rowIssues),
@@ -963,12 +976,13 @@ function summarizeSeedAttempts(seed, attempts) {
     items: uniqueItems,
     rowIssues: uniqueRowIssues,
     parseErrors,
-    account: {
-      seedId: seed.seedId,
-      handle: seed.handle,
-      displayName: seed.displayName,
-      userPageUrl: seed.userPageUrl,
-      batchId: latestBatchId,
+      account: {
+        seedId: seed.seedId,
+        sourceTweetId: seed.sourceTweetId || null,
+        handle: seed.handle,
+        displayName: seed.displayName,
+        userPageUrl: seed.userPageUrl,
+        batchId: latestBatchId,
       status,
       tweetCount: uniqueItems.length,
       notes,
@@ -1002,6 +1016,7 @@ function buildAccountObservability(seed, attempts, outcome) {
 function buildAccountSummary(account) {
   return {
     seedId: account.seedId,
+    sourceTweetId: account.sourceTweetId ?? null,
     handle: account.handle,
     displayName: account.displayName,
     userPageUrl: account.userPageUrl,
@@ -1055,6 +1070,15 @@ function buildCsvRecordFromItem(item) {
   };
 }
 
+function buildTweetIdentityIndexRecord(item) {
+  return {
+    TweetID: item.tweetId,
+    UserPageURL: item.source?.userPageUrl ?? '',
+    Handle: item.username,
+    Name: item.displayName,
+  };
+}
+
 function countByStatus(accounts, status) {
   return accounts.filter((account) => account.status === status).length;
 }
@@ -1062,6 +1086,7 @@ function countByStatus(accounts, status) {
 function buildZeroPostDormantSeed(seed) {
   return {
     seedId: seed.seedId,
+    sourceTweetId: seed.sourceTweetId || null,
     handle: seed.handle,
     displayName: seed.displayName,
     userPageUrl: seed.userPageUrl,
@@ -1211,6 +1236,7 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
       if (daysSinceLastTweet > dormantThresholdDays) {
         dormantSeeds.push({
           seedId: seed.seedId,
+          sourceTweetId: seed.sourceTweetId || null,
           handle: seed.handle,
           displayName: seed.displayName,
           userPageUrl: seed.userPageUrl,
@@ -1261,8 +1287,12 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
   const effectiveBatchSize = Math.max(1, Number(batchSize ?? profile.batchSize ?? 10));
   const effectiveConcurrency = Math.max(1, Number(profile.concurrency ?? 1));
   const refetchConfig = resolveRefetchConfig(profile, effectiveConcurrency);
+  const timeWindowHours = profile.timeWindowHours ?? 24;
   const runDate = resolveRunDate(date);
   const resolvedReferenceTime = resolveReferenceTime(referenceTime, runDate);
+  const resolvedReferenceTimeMs = Date.parse(resolvedReferenceTime);
+  const windowStartUtc = new Date(resolvedReferenceTimeMs - (timeWindowHours * MS_PER_HOUR)).toISOString();
+  const windowEndUtc = new Date(resolvedReferenceTimeMs).toISOString();
   const runDir = await ensureRunDir(skillRoot, config.defaults.outputDir, runDate);
   const startedAt = Date.now();
 
@@ -1323,7 +1353,9 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       provider: profile.providerRef,
       model: profile.model,
       sourceCsvPath: effectiveSeedCsvPath,
-      timeWindowHours: profile.timeWindowHours ?? 24,
+      timeWindowHours,
+      windowStartUtc,
+      windowEndUtc,
       includeTweetTypes: profile.includeTweetTypes ?? ['original', 'repost', 'quote'],
       excludePureReplies: profile.excludePureReplies !== false,
       seedCount: seeds.length,
@@ -1409,6 +1441,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     ...observability.accounts,
     ...dormantAccounts.map((entry) => ({
       seedId: entry.seedId,
+      sourceTweetId: entry.sourceTweetId ?? null,
       handle: entry.handle,
       displayName: entry.displayName,
       userPageUrl: entry.userPageUrl,
@@ -1423,9 +1456,12 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       dormantReason: entry.dormantReason ?? null,
       lastTweetDate: entry.lastTweetDate,
       daysSinceLastTweet: entry.daysSinceLastTweet,
-    })),
+      })),
   ];
-  const items = finalOutcomes.flatMap((outcome) => outcome.items);
+  const items = uniqueByKey(
+    finalOutcomes.flatMap((outcome) => outcome.items),
+    (item) => item.tweetId,
+  );
   const batchLevelIssues = uniqueByKey(
     executedBatchResults.flatMap((result) => result.rowIssues.filter((issue) => !issue.seedId)),
     (issue) => `${issue.batchId}|${issue.rowNumber}|${issue.handle ?? ''}|${issue.reason}`,
@@ -1471,13 +1507,29 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     config.runtime.artifacts.fetchRawCsv ?? 'fetch.raw.csv',
     fetchRawCsvText,
   );
+  const tweetIdentityRows = uniqueByKey(
+    items.map((item) => buildTweetIdentityIndexRecord(item)),
+    (row) => row.TweetID,
+  );
+  const fetchTweetIndexCsvText = serializeCsv(
+    tweetIdentityRows,
+    ['TweetID', 'UserPageURL', 'Handle', 'Name'],
+  );
+  const fetchTweetIndexCsvPath = await writeTextArtifact(
+    runDir,
+    config.runtime.artifacts.fetchTweetIndexCsv ?? 'fetch.tweet-index.csv',
+    fetchTweetIndexCsvText,
+  );
 
   const fetchRaw = {
     meta: {
       sourceProvider: 'grok',
       capturedAt: resolvedReferenceTime,
+      windowStartUtc,
+      windowEndUtc,
       fetchInputPath,
       fetchRawCsvPath,
+      fetchTweetIndexCsvPath,
       batchCount: executedBatchResults.length,
       initialBatchCount: seedBatches.length,
       refetchRoundCount,
@@ -1504,14 +1556,16 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
   const fetchRawPath = await writeJsonArtifact(runDir, config.runtime.artifacts.fetchRaw, fetchRaw);
 
   const fetchResult = {
-    meta: {
-      sourceProvider: 'grok',
-      fetchedAt: resolvedReferenceTime,
-      sourceCsvPath: effectiveSeedCsvPath,
-      timeWindowHours: profile.timeWindowHours ?? 24,
-      includeTweetTypes: profile.includeTweetTypes ?? ['original', 'repost', 'quote'],
-      excludePureReplies: profile.excludePureReplies !== false,
-      seedCount: seeds.length,
+      meta: {
+        sourceProvider: 'grok',
+        fetchedAt: resolvedReferenceTime,
+        windowStartUtc,
+        windowEndUtc,
+        sourceCsvPath: effectiveSeedCsvPath,
+        timeWindowHours,
+        includeTweetTypes: profile.includeTweetTypes ?? ['original', 'repost', 'quote'],
+        excludePureReplies: profile.excludePureReplies !== false,
+        seedCount: seeds.length,
       activeSeedCount: effectiveSeeds.length,
       dormantSeedCount: dormantAccounts.length,
       precheckEnabled,
@@ -1523,10 +1577,11 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       refetchRoundCount,
       refetchedAccountCount: refetchedSeedIds.size,
       tweetCount: items.length,
-      fetchInputPath,
-      fetchRawPath,
-      fetchRawCsvPath,
-      parseErrorCount: batchParseErrors.length,
+        fetchInputPath,
+        fetchRawPath,
+        fetchRawCsvPath,
+        fetchTweetIndexCsvPath,
+        parseErrorCount: batchParseErrors.length,
       coveredAccountCount: countByStatus(accounts, 'covered'),
       noTweetAccountCount: countByStatus(accounts, 'no_tweets_found'),
       failedAccountCount: countByStatus(accounts, 'fetch_failed'),
@@ -1535,17 +1590,19 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       incompleteAccountCount: countByStatus(accounts, 'incomplete'),
       recoveredByRefetchCount: observability.counts.recoveredByRefetchCount,
       stayedNoTweetAccountCount: observability.counts.stayedNoTweetAccountCount,
-      stayedIncompleteAccountCount: observability.counts.stayedIncompleteAccountCount,
-      stayedFailedAccountCount: observability.counts.stayedFailedAccountCount,
-      stayedSoftFailedAccountCount: observability.counts.stayedSoftFailedAccountCount,
-      warningCount: warnings.length,
-    },
+        stayedIncompleteAccountCount: observability.counts.stayedIncompleteAccountCount,
+        stayedFailedAccountCount: observability.counts.stayedFailedAccountCount,
+        stayedSoftFailedAccountCount: observability.counts.stayedSoftFailedAccountCount,
+        warningCount: warnings.length,
+        durationMs: Date.now() - startedAt,
+      },
     accounts,
     refetch: observability.refetch,
     items,
     warnings,
   };
   const fetchResultPath = await writeJsonArtifact(runDir, config.runtime.artifacts.fetchResult, fetchResult);
+  const durationMs = Date.now() - startedAt;
   logger.info('fetch_complete', {
     runDate,
     activeSeedCount: effectiveSeeds.length,
@@ -1555,7 +1612,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     incompleteAccountCount: countByStatus(accounts, 'incomplete'),
     failedAccountCount: countByStatus(accounts, 'fetch_failed'),
     refetchRoundCount,
-    durationMs: Date.now() - startedAt,
+    durationMs,
   });
 
   return {
@@ -1563,6 +1620,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     fetchInputPath,
     fetchRawPath,
     fetchRawCsvPath,
+    fetchTweetIndexCsvPath,
     fetchResultPath,
     seedCount: seeds.length,
     activeSeedCount: effectiveSeeds.length,
@@ -1574,5 +1632,8 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     softFailedAccountCount: countByStatus(accounts, 'soft_failed'),
     dormantSkippedAccountCount: countByStatus(accounts, 'dormant_skipped'),
     incompleteAccountCount: countByStatus(accounts, 'incomplete'),
+    windowStartUtc,
+    windowEndUtc,
+    durationMs,
   };
 }

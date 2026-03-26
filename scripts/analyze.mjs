@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { loadConfig, loadSourceDocuments, resolveMaybeRelative } from './config-loader.mjs';
 import { resolveAnalysisProfile } from './provider-resolver.mjs';
 import { ensureRunDir, readJsonArtifact, writeJsonArtifact, writeTextArtifact, resolveRunDate, findLatestRunDir } from './artifact-store.mjs';
@@ -10,6 +11,13 @@ const MIN_ANALYZE_TIMEOUT_MS = 300000;
 const MIN_TOTAL_ACCOUNTS_FOR_QUALITY_GATE = 10;
 const MIN_HEALTHY_COVERED_ACCOUNTS = 3;
 const MIN_HEALTHY_TWEETS = 12;
+const MAX_DIGEST_EVIDENCE_TWEETS = 4;
+const MAX_DIGEST_EVIDENCE_PER_ACCOUNT = 1;
+const MAX_DIGEST_EVIDENCE_TEXT_CHARS = 140;
+const MAX_COVERAGE_NOTE_CHARS = 100;
+const MAX_WARNING_MESSAGE_CHARS = 160;
+const MAX_WARNING_SAMPLES = 0;
+const MAX_ANALYZE_OUTPUT_TOKENS = 3000;
 
 const NOISE_PATTERNS = [
   /^test\b/i,
@@ -25,6 +33,41 @@ const NOISE_PATTERNS = [
 const MIN_SIGNAL_TEXT_LENGTH = 15;
 const CONTINUATION_PROMPT = '请继续输出，从上次中断的地方接续，不要重复已输出的内容。';
 const OVERLAP_CHECK_LENGTH = 200;
+
+async function pathExists(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findLatestFetchRunDir(skillRoot, outputDir, runDate, fetchArtifactName) {
+  const dateDir = resolve(skillRoot, outputDir, runDate);
+  const latestRunDir = await findLatestRunDir(skillRoot, outputDir, runDate);
+  if (await pathExists(resolve(latestRunDir, fetchArtifactName))) return latestRunDir;
+  if (await pathExists(resolve(dateDir, fetchArtifactName))) return dateDir;
+
+  try {
+    const entries = await readdir(dateDir, { withFileTypes: true });
+    const runDirs = entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('run-'))
+      .map((entry) => entry.name)
+      .sort()
+      .reverse();
+    for (const runName of runDirs) {
+      const candidateDir = resolve(dateDir, runName);
+      if (await pathExists(resolve(candidateDir, fetchArtifactName))) {
+        return candidateDir;
+      }
+    }
+  } catch {
+    return latestRunDir;
+  }
+
+  return latestRunDir;
+}
 
 export function filterNoiseTweets(items) {
   const signal = [];
@@ -44,6 +87,81 @@ export function filterNoiseTweets(items) {
 
 function renderTemplate(template, vars) {
   return template.replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_, key) => String(vars[key] ?? ''));
+}
+
+function normalizeTweetTextForPrompt(text) {
+  return String(text ?? '')
+    .replace(/\r/g, '')
+    .replace(/\n+/g, ' \\n ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function compactTweetText(text, maxChars = MAX_DIGEST_EVIDENCE_TEXT_CHARS) {
+  const normalized = normalizeTweetTextForPrompt(text);
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function compactNoteList(notes = [], maxItems = 1, maxChars = MAX_COVERAGE_NOTE_CHARS) {
+  return (Array.isArray(notes) ? notes : [])
+    .slice(0, maxItems)
+    .map((note) => compactTweetText(note, maxChars));
+}
+
+function summarizeWarningsForPrompt(warnings = []) {
+  const warningList = Array.isArray(warnings) ? warnings : [];
+  const countsByType = Object.entries(
+    warningList.reduce((acc, warning) => {
+      const type = String(warning?.type ?? 'unknown');
+      acc[type] = (acc[type] ?? 0) + 1;
+      return acc;
+    }, {}),
+  ).map(([type, count]) => ({ type, count }));
+
+  return {
+    total_warning_count: warningList.length,
+    counts_by_type: countsByType,
+    samples: warningList.slice(0, MAX_WARNING_SAMPLES).map((warning) => ({
+      type: warning?.type ?? 'unknown',
+      handle: warning?.handle ?? null,
+      batch_id: warning?.batchId ?? null,
+      message: compactTweetText(warning?.message ?? '', MAX_WARNING_MESSAGE_CHARS),
+    })),
+  };
+}
+
+function scoreDigestItem(item) {
+  const text = normalizeTweetTextForPrompt(item?.text);
+  let score = Math.min(text.length, 240);
+  if (/https?:\/\//i.test(text)) score += 120;
+  if (/(github|demo|release|launched|launch|benchmark|paper|dataset|tutorial|guide|agent|model|open\s+source)/i.test(text)) score += 80;
+  if (/\d/.test(text)) score += 20;
+  return score;
+}
+
+export function selectDigestEvidenceItems(items, options = {}) {
+  const maxTotalItems = Math.max(1, Number(options.maxTotalItems ?? MAX_DIGEST_EVIDENCE_TWEETS) || MAX_DIGEST_EVIDENCE_TWEETS);
+  const maxItemsPerAccount = Math.max(1, Number(options.maxItemsPerAccount ?? MAX_DIGEST_EVIDENCE_PER_ACCOUNT) || MAX_DIGEST_EVIDENCE_PER_ACCOUNT);
+  const rankedItems = [...(Array.isArray(items) ? items : [])]
+    .sort((left, right) => {
+      const scoreDelta = scoreDigestItem(right) - scoreDigestItem(left);
+      if (scoreDelta !== 0) return scoreDelta;
+      return String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? ''));
+    });
+
+  const selected = [];
+  const perAccountCounts = new Map();
+  for (const item of rankedItems) {
+    if (selected.length >= maxTotalItems) break;
+    const handle = String(item?.username ?? '').trim().toLowerCase();
+    const currentCount = perAccountCounts.get(handle) ?? 0;
+    if (currentCount >= maxItemsPerAccount) continue;
+    selected.push(item);
+    perAccountCounts.set(handle, currentCount + 1);
+  }
+
+  return selected.sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')));
 }
 
 export function resolveAnalyzeTimeoutMs(timeoutMs) {
@@ -115,6 +233,68 @@ export function assessBriefQuality({ coverage, tweetCount, signalTweetCount }) {
   };
 }
 
+export function diagnoseFetchEvidence({ accounts = [], items = [], signalItems = [], warnings = [] }) {
+  const coverage = summarizeCoverage(accounts);
+  const warningTypes = Array.isArray(warnings)
+    ? [...new Set(warnings.map((warning) => String(warning?.type ?? '').trim()).filter(Boolean))]
+    : [];
+
+  if (items.length === 0) {
+    return {
+      status: 'fetch_empty',
+      note: `Grok did not return any in-window tweet items. Coverage is ${coverage.coveredAccountCount}/${coverage.totalAccountCount} accounts.`,
+      warningTypes,
+    };
+  }
+
+  if (signalItems.length === 0) {
+    return {
+      status: 'signal_empty',
+      note: `Grok returned ${items.length} tweet items, but all of them were filtered as low-signal or noise before the GPT brief stage.`,
+      warningTypes,
+    };
+  }
+
+  if (coverage.coveredAccountCount === 0) {
+    return {
+      status: 'coverage_empty',
+      note: `Grok returned ${signalItems.length} signal tweets, but 0/${coverage.totalAccountCount} accounts reached covered status. Treat the evidence as incomplete.`,
+      warningTypes,
+    };
+  }
+
+  return {
+    status: 'ready',
+    note: 'Fetch evidence is sufficient for GPT digest generation.',
+    warningTypes,
+  };
+}
+
+function buildFallbackDailyBrief({ runDate, quality, diagnosis, coverage, tweetCount, signalTweetCount }) {
+  const warningTypes = Array.isArray(diagnosis?.warningTypes) && diagnosis.warningTypes.length > 0
+    ? diagnosis.warningTypes.join(', ')
+    : 'none';
+  const qualityNote = quality?.note ? `- 质量门控：${quality.note}` : null;
+  return [
+    `# X 日报 | ${runDate}`,
+    '',
+    '> GPT 未返回可用日报正文，以下为抓取诊断结果。',
+    '',
+    '## 抓取诊断',
+    `- 状态：${diagnosis?.status ?? 'unknown'}`,
+    `- 说明：${diagnosis?.note ?? 'No diagnosis available.'}`,
+    qualityNote,
+    `- 抓取账号覆盖：${coverage.coveredAccountCount}/${coverage.totalAccountCount}`,
+    `- 原始推文数：${tweetCount}`,
+    `- 信号推文数：${signalTweetCount}`,
+    `- 抓取警告类型：${warningTypes}`,
+    '',
+    '## 下一步建议',
+    '- 先检查 Grok 抓取日志、名单覆盖和 24 小时时间窗口是否正常。',
+    '- 如果抓取正常，再检查 GPT 请求日志、超时和返回内容是否为空。',
+  ].filter(Boolean).join('\n');
+}
+
 export function injectQualityBanner(markdown, quality) {
   const text = String(markdown ?? '').trim();
   if (!text) return text;
@@ -129,12 +309,14 @@ export function injectQualityBanner(markdown, quality) {
   return `${banner}\n\n${text}`;
 }
 
-export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], warnings = [] }) {
+export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], warnings = [], omittedSignalTweetCount = 0 }) {
   const coverage = summarizeCoverage(accounts);
   const evidence = {
     meta: {
       source_provider: meta.sourceProvider ?? 'grok',
       fetched_at: meta.fetchedAt ?? null,
+      window_start_utc: meta.windowStartUtc ?? null,
+      window_end_utc: meta.windowEndUtc ?? null,
       time_window_hours: meta.timeWindowHours ?? 24,
       total_accounts: coverage.totalAccountCount,
       covered_accounts: coverage.coveredAccountCount,
@@ -142,6 +324,8 @@ export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], 
       failed_accounts: coverage.failedAccountCount,
       incomplete_accounts: coverage.incompleteAccountCount,
       total_tweets: items.length,
+      omitted_signal_tweets: omittedSignalTweetCount,
+      text_char_limit: MAX_DIGEST_EVIDENCE_TEXT_CHARS,
     },
     coverage: accounts.map((account) => ({
       seed_id: account.seedId,
@@ -149,7 +333,7 @@ export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], 
       display_name: account.displayName,
       status: account.status,
       tweet_count: account.tweetCount,
-      notes: account.notes,
+      notes: compactNoteList(account.notes),
     })),
     tweets: items.map((item) => ({
       seed_id: item.source?.seedId ?? null,
@@ -157,11 +341,11 @@ export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], 
       display_name: item.displayName,
       tweet_id: item.tweetId,
       created_at: item.createdAt,
-      text: item.text,
+      text: compactTweetText(item.text, MAX_DIGEST_EVIDENCE_TEXT_CHARS),
       original_url: item.originalUrl,
       batch_id: item.batchId,
     })),
-    warnings,
+    warnings: summarizeWarningsForPrompt(warnings),
   };
   return JSON.stringify(evidence, null, 2);
 }
@@ -186,7 +370,7 @@ export async function runAnalysisWithContinuation({ profile, messages, fetchImpl
         model: profile.modelId,
         timeoutMs,
         temperature: profile.temperature,
-        maxTokens: profile.maxOutputTokens,
+        maxTokens: Math.min(profile.maxOutputTokens ?? MAX_ANALYZE_OUTPUT_TOKENS, MAX_ANALYZE_OUTPUT_TOKENS),
         messages: currentMessages,
         fetchImpl,
         logger: logger?.child('llm'),
@@ -239,7 +423,12 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
   const profile = resolveAnalysisProfile(config, sourceDocs, analysisProfile || config.analysis.activeProfile);
   const effectiveTimeoutMs = resolveAnalyzeTimeoutMs(profile.timeoutMs);
   const runDate = resolveRunDate(date);
-  const fetchRunDir = await findLatestRunDir(skillRoot, config.defaults.outputDir, runDate);
+  const fetchRunDir = await findLatestFetchRunDir(
+    skillRoot,
+    config.defaults.outputDir,
+    runDate,
+    config.runtime.artifacts.fetchResult,
+  );
   const runDir = await ensureRunDir(skillRoot, config.defaults.outputDir, runDate);
   const startedAt = Date.now();
   const fetchResult = await readJsonArtifact(fetchRunDir, config.runtime.artifacts.fetchResult);
@@ -282,11 +471,14 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
 
   const promptPath = resolveMaybeRelative(skillRoot, profile.promptFile);
   const promptTemplate = await readFile(promptPath, 'utf8');
+  const digestItems = selectDigestEvidenceItems(signalItems);
+  const omittedSignalTweetCount = Math.max(0, signalItems.length - digestItems.length);
   const tweetEvidenceBlock = buildTweetEvidenceBlock({
     meta: fetchResult.meta,
     accounts,
-    items: signalItems,
+    items: digestItems,
     warnings,
+    omittedSignalTweetCount,
   });
   const renderedPrompt = renderTemplate(promptTemplate, {
     REPORT_DATE: runDate,
@@ -299,6 +491,8 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
       analysisProfile: profile.name,
       reportDate: runDate,
       timeoutMs: effectiveTimeoutMs,
+      promptItemCount: digestItems.length,
+      omittedSignalTweetCount,
     },
     evidence: {
       meta: fetchResult.meta,
@@ -325,7 +519,25 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
     tweetCount: items.length,
     signalTweetCount: signalItems.length,
   });
-  const finalMarkdown = injectQualityBanner(outputText, quality);
+  const fetchDiagnosis = diagnoseFetchEvidence({
+    accounts,
+    items,
+    signalItems,
+    warnings,
+  });
+  let answerSource = 'model';
+  let finalMarkdown = injectQualityBanner(outputText, quality);
+  if (!finalMarkdown) {
+    answerSource = 'fallback';
+    finalMarkdown = buildFallbackDailyBrief({
+      runDate,
+      quality,
+      diagnosis: fetchDiagnosis,
+      coverage,
+      tweetCount: items.length,
+      signalTweetCount: signalItems.length,
+    });
+  }
   const analyzeResult = {
     meta: {
       analysisProfile: profile.name,
@@ -336,13 +548,17 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
       timeoutMs: effectiveTimeoutMs,
       tweetCount: items.length,
       signalTweetCount: signalItems.length,
+      promptSignalTweetCount: digestItems.length,
+      omittedSignalTweetCount,
       noiseTweetCount: noiseItems.length,
       continuationRounds: continuationResult.continuationRounds,
       truncated: continuationResult.truncated,
       coverage,
+      fetchDiagnosis,
       rosterScoring,
     },
     answer: {
+      source: answerSource,
       markdown: finalMarkdown,
     },
     quality,

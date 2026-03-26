@@ -65,6 +65,8 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.meta.model, 'gpt-5.4(xhigh)');
     assert.equal(analyzeResult.meta.tweetCount, 2);
     assert.equal(analyzeResult.meta.coverage.failedAccountCount, 0);
+    assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
+    assert.equal(analyzeResult.answer.source, 'model');
     assert.equal(analyzeResult.answer.markdown, FIXTURE_ANALYZE_MARKDOWN);
     assert.equal(analyzeResult.quality.needsReview, false);
 
@@ -196,6 +198,65 @@ test('runAnalyze can update roster scores via GPT before writing the daily brief
     const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
     assert.equal(alice.score, 4);
     assert.equal(alice.tier, 'daily');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze writes a readable fallback diagnosis when the GPT brief is empty', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(''),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
+    assert.match(analyzeResult.answer.markdown, /GPT 未返回可用日报正文/);
+
+    const finalReport = await readText(analyzeSummary.finalReportPath);
+    assert.match(finalReport, /抓取诊断/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze reuses the latest available fetch run even when a newer analyze-only run exists', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const fetchSummary = await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(FIXTURE_ANALYZE_MARKDOWN),
+    });
+
+    const secondAnalyze = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(FIXTURE_ANALYZE_MARKDOWN),
+    });
+
+    const analyzeInput = await readJson(secondAnalyze.analyzeInputPath);
+    assert.equal(analyzeInput.evidence.meta.fetchInputPath, fetchSummary.fetchInputPath);
+    assert.equal(analyzeInput.evidence.meta.fetchRawPath, fetchSummary.fetchRawPath);
+    assert.equal(analyzeInput.evidence.meta.fetchRawCsvPath, fetchSummary.fetchRawCsvPath);
   } finally {
     await fixture.cleanup();
   }

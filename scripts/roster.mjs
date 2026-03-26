@@ -12,6 +12,8 @@ const DEFAULT_TIER_INTERVALS = {
   weekly: 7,
   cold: 28,
 };
+const MAX_SCORING_TWEET_TEXT_CHARS = 140;
+const MAX_ROSTER_SCORE_OUTPUT_TOKENS = 1500;
 
 function normalizeNumber(value, fallback) {
   const parsed = Number(value);
@@ -30,8 +32,18 @@ function escapeCsvValue(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
+function compactTweetText(text, maxChars = MAX_SCORING_TWEET_TEXT_CHARS) {
+  const normalized = String(text ?? '')
+    .replace(/\r/g, '')
+    .replace(/\n+/g, ' \\n ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
 function serializeDailyRosterCsv(rows) {
-  const headers = ['UserPageURL', 'Handle', 'Name', 'PostCount'];
+  const headers = ['TweetID', 'UserPageURL', 'Handle', 'Name', 'PostCount'];
   const lines = rows.map((row) => headers.map((header) => escapeCsvValue(row[header] ?? '')).join(','));
   return [headers.join(','), ...lines].join('\n');
 }
@@ -52,11 +64,15 @@ function daysBetweenDates(leftDate, rightDate) {
   return Math.floor((leftMs - rightMs) / DAY_MS);
 }
 
-function buildSeedKey(seed) {
+function buildSeedLookupKeys(seed) {
+  const keys = [];
+  const sourceTweetId = String(seed.sourceTweetId ?? '').trim();
+  if (sourceTweetId) keys.push(`tweet:${sourceTweetId}`);
   const handle = String(seed.handle ?? '').trim().toLowerCase();
-  if (handle) return `handle:${handle}`;
+  if (handle) keys.push(`handle:${handle}`);
   const userPageUrl = String(seed.userPageUrl ?? '').trim().toLowerCase();
-  return `url:${userPageUrl}`;
+  if (userPageUrl) keys.push(`url:${userPageUrl}`);
+  return keys;
 }
 
 function extractJsonPayload(text) {
@@ -147,13 +163,16 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
   }
 
   const existingByKey = new Map(
-    (Array.isArray(rawState.accounts) ? rawState.accounts : []).map((entry) => [buildSeedKey(entry), entry]),
+    (Array.isArray(rawState.accounts) ? rawState.accounts : []).flatMap((entry) => (
+      buildSeedLookupKeys(entry).map((key) => [key, entry])
+    )),
   );
 
   const accounts = masterSeeds.map((seed) => {
-    const existing = existingByKey.get(buildSeedKey(seed));
+    const existing = buildSeedLookupKeys(seed).map((key) => existingByKey.get(key)).find(Boolean);
     const score = clampScore(normalizeNumber(existing?.score, rosterConfig.defaultScore), rosterConfig);
     return {
+      sourceTweetId: seed.sourceTweetId || existing?.sourceTweetId || '',
       handle: seed.handle,
       displayName: seed.displayName,
       userPageUrl: seed.userPageUrl,
@@ -216,6 +235,7 @@ function selectDailyRosterEntries(accounts, runDate, rosterConfig) {
   }
 
   return effectiveSelection.map((entry) => ({
+    TweetID: entry.sourceTweetId || '',
     UserPageURL: entry.userPageUrl,
     Handle: entry.handle,
     Name: entry.displayName,
@@ -287,13 +307,16 @@ function buildScoringEvidence(fetchResult, scoreState, rosterConfig) {
   }
 
   const accounts = Array.isArray(fetchResult?.accounts) ? fetchResult.accounts : [];
-  const scoreByKey = new Map(scoreState.accounts.map((entry) => [buildSeedKey(entry), entry]));
+  const scoreByKey = new Map(
+    scoreState.accounts.flatMap((entry) => buildSeedLookupKeys(entry).map((key) => [key, entry])),
+  );
 
   return accounts
     .filter((account) => Number(account.tweetCount ?? 0) > 0)
     .map((account) => {
-      const scoreEntry = scoreByKey.get(buildSeedKey(account));
-      const tweets = (tweetsByHandle.get(String(account.handle ?? '').trim().toLowerCase()) ?? []).slice(0, rosterConfig.maxTweetsPerAccount);
+      const scoreEntry = buildSeedLookupKeys(account).map((key) => scoreByKey.get(key)).find(Boolean);
+      const effectiveMaxTweetsPerAccount = Math.min(rosterConfig.maxTweetsPerAccount, 2);
+      const tweets = (tweetsByHandle.get(String(account.handle ?? '').trim().toLowerCase()) ?? []).slice(0, effectiveMaxTweetsPerAccount);
       return {
         handle: account.handle,
         display_name: account.displayName,
@@ -306,7 +329,7 @@ function buildScoringEvidence(fetchResult, scoreState, rosterConfig) {
         recent_tweets: tweets.map((tweet) => ({
           tweet_id: tweet.tweetId,
           created_at: tweet.createdAt,
-          text: tweet.text,
+          text: compactTweetText(tweet.text),
           original_url: tweet.originalUrl,
         })),
       };
@@ -315,11 +338,13 @@ function buildScoringEvidence(fetchResult, scoreState, rosterConfig) {
 
 function applyScoringDecisions(scoreState, fetchResult, decisions, runDate, rosterConfig) {
   const decisionByHandle = new Map(decisions.map((decision) => [decision.handle.toLowerCase(), decision]));
-  const accountsByKey = new Map(scoreState.accounts.map((entry) => [buildSeedKey(entry), entry]));
+  const accountsByKey = new Map(
+    scoreState.accounts.flatMap((entry) => buildSeedLookupKeys(entry).map((key) => [key, entry])),
+  );
   const evaluatedAt = `${runDate}T00:00:00Z`;
 
   for (const account of Array.isArray(fetchResult?.accounts) ? fetchResult.accounts : []) {
-    const entry = accountsByKey.get(buildSeedKey(account));
+    const entry = buildSeedLookupKeys(account).map((key) => accountsByKey.get(key)).find(Boolean);
     if (!entry) continue;
 
     const decision = decisionByHandle.get(String(account.handle ?? '').trim().toLowerCase());
@@ -360,7 +385,8 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
   const masterSeeds = await readMasterRoster(rosterConfig.masterCsvPath);
   const scoreState = await readScoreState(rosterConfig.scoreFilePath, masterSeeds, rosterConfig);
   const scoringAccounts = buildScoringEvidence(fetchResult, scoreState, rosterConfig);
-  const scoringBatches = chunkArray(scoringAccounts, rosterConfig.batchSize);
+  const effectiveBatchSize = Math.min(rosterConfig.batchSize, 3);
+  const scoringBatches = chunkArray(scoringAccounts, effectiveBatchSize);
   const promptTemplate = await readFile(rosterConfig.promptFile, 'utf8');
   const runtimeArtifacts = config.runtime?.artifacts ?? {};
   const rosterScoreInputPath = resolveMaybeRelative(runDir, runtimeArtifacts.rosterScoreInput ?? 'roster.score.input.json');
@@ -368,7 +394,7 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
 
   const inputPayload = {
     runDate,
-    batchSize: rosterConfig.batchSize,
+    batchSize: effectiveBatchSize,
     maxTweetsPerAccount: rosterConfig.maxTweetsPerAccount,
     accountCount: scoringAccounts.length,
     accounts: scoringAccounts,
@@ -389,7 +415,7 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
         model: profile.modelId,
         timeoutMs: profile.timeoutMs,
         temperature: profile.temperature,
-        maxTokens: profile.maxOutputTokens,
+        maxTokens: Math.min(profile.maxOutputTokens ?? MAX_ROSTER_SCORE_OUTPUT_TOKENS, MAX_ROSTER_SCORE_OUTPUT_TOKENS),
         messages: [{ role: 'user', content: renderedPrompt }],
         fetchImpl,
         logger: logger?.child('llm'),

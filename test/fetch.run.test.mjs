@@ -44,15 +44,22 @@ test('runFetch smoke writes fetch artifacts from a controlled completion', async
     assert.equal(result.seedCount, 2);
     assert.equal(result.accountCount, 2);
     assert.equal(result.tweetCount, 2);
+    assert.equal(result.windowStartUtc, '2026-03-22T14:21:05.770Z');
+    assert.equal(result.windowEndUtc, FIXTURE_REFERENCE_TIME);
+    assert.ok(result.durationMs >= 0);
     assert.equal(join(result.runDir, 'fetch.input.json'), result.fetchInputPath);
     assert.equal(join(result.runDir, 'fetch.raw.json'), result.fetchRawPath);
     assert.equal(join(result.runDir, 'fetch.raw.csv'), result.fetchRawCsvPath);
+    assert.equal(join(result.runDir, 'fetch.tweet-index.csv'), result.fetchTweetIndexCsvPath);
     assert.equal(join(result.runDir, 'fetch.result.json'), result.fetchResultPath);
 
     const fetchInput = await readJson(result.fetchInputPath);
     assert.equal(fetchInput.task.sourceCsvPath, join(fixture.skillRoot, 'seed.csv'));
     assert.equal(fetchInput.task.seedCount, 2);
+    assert.equal(fetchInput.task.windowStartUtc, '2026-03-22T14:21:05.770Z');
+    assert.equal(fetchInput.task.windowEndUtc, FIXTURE_REFERENCE_TIME);
     assert.equal(fetchInput.seeds[0].handle, 'alice');
+    assert.equal(fetchInput.seeds[0].sourceTweetId, '1599634054919245824');
 
     const fetchRaw = await readJson(result.fetchRawPath);
     assert.equal(fetchRaw.batches.length, 1);
@@ -62,11 +69,20 @@ test('runFetch smoke writes fetch artifacts from a controlled completion', async
     const fetchRawCsv = await readText(result.fetchRawCsvPath);
     assert.match(fetchRawCsv, /^username,tweet_id,created_at,text,original_url/m);
     assert.match(fetchRawCsv, /190001/);
+    const fetchTweetIndexCsv = await readText(result.fetchTweetIndexCsvPath);
+    assert.match(fetchTweetIndexCsv, /^TweetID,UserPageURL,Handle,Name/m);
+    assert.match(fetchTweetIndexCsv, /190001/);
+    assert.match(fetchTweetIndexCsv, /https:\/\/x\.com\/alice/);
 
     const fetchResult = await readJson(result.fetchResultPath);
     assert.equal(fetchResult.meta.sourceProvider, 'grok');
     assert.equal(fetchResult.meta.seedCount, 2);
     assert.equal(fetchResult.meta.tweetCount, 2);
+    assert.equal(fetchResult.meta.windowStartUtc, '2026-03-22T14:21:05.770Z');
+    assert.equal(fetchResult.meta.windowEndUtc, FIXTURE_REFERENCE_TIME);
+    assert.equal(fetchResult.meta.fetchTweetIndexCsvPath, result.fetchTweetIndexCsvPath);
+    assert.ok(fetchResult.meta.durationMs >= 0);
+    assert.equal(fetchResult.items[0].source.sourceTweetId, '1599634054919245824');
     assert.equal(fetchResult.accounts[0].status, 'covered');
     assert.equal(fetchResult.accounts[1].status, 'no_tweets_found');
   } finally {

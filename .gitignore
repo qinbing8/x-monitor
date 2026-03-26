@@ -3,5 +3,7 @@
 data/
 config.json
 *.csv
+account-score.json
+claude code 执行日志-*.log
 x-monitor 问题清单.txt
 需求文档.txt

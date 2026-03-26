@@ -223,6 +223,7 @@ export async function createMockSkillFixture() {
         fetchInput: 'fetch.input.json',
         fetchRaw: 'fetch.raw.json',
         fetchRawCsv: 'fetch.raw.csv',
+        fetchTweetIndexCsv: 'fetch.tweet-index.csv',
         fetchResult: 'fetch.result.json',
         analyzeInput: 'analyze.input.json',
         analyzeResult: 'analyze.result.json',
