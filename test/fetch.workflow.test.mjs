@@ -84,9 +84,9 @@ test('runFetch records unresolved incomplete and failed accounts after refetch',
     const fetchResult = await readJson(result.fetchResultPath);
     assert.equal(fetchResult.meta.recoveredByRefetchCount, 0);
     assert.equal(fetchResult.meta.stayedIncompleteAccountCount, 1);
-    assert.equal(fetchResult.meta.stayedFailedAccountCount, 1);
+    assert.equal(fetchResult.meta.stayedSoftFailedAccountCount, 1);
     assert.equal(fetchResult.accounts[0].status, 'incomplete');
-    assert.equal(fetchResult.accounts[1].status, 'fetch_failed');
+    assert.equal(fetchResult.accounts[1].status, 'soft_failed');
   } finally {
     await fixture.cleanup();
   }

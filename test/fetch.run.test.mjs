@@ -257,11 +257,11 @@ test('runFetch keeps batch failures in artifacts so downstream analysis can stil
 
     assert.equal(result.tweetCount, 0);
     assert.equal(result.parseErrorCount, 1);
-    assert.equal(result.failedAccountCount, 2);
+    assert.equal(result.softFailedAccountCount, 2);
 
     const fetchResult = await readJson(result.fetchResultPath);
-    assert.equal(fetchResult.accounts[0].status, 'fetch_failed');
-    assert.equal(fetchResult.accounts[1].status, 'fetch_failed');
+    assert.equal(fetchResult.accounts[0].status, 'soft_failed');
+    assert.equal(fetchResult.accounts[1].status, 'soft_failed');
     assert.equal(fetchResult.warnings[0].type, 'batch_parse_error');
   } finally {
     await fixture.cleanup();

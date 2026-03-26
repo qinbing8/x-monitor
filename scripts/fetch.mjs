@@ -922,6 +922,7 @@ function buildSeedAttempt(seed, batchResult) {
     items: batchResult.items.filter((item) => item.source?.seedId === seed.seedId),
     rowIssues: batchResult.rowIssues.filter((issue) => issue.seedId === seed.seedId),
     parseError: batchResult.parseError,
+    responseClassification: batchResult.responseClassification?.classification ?? null,
   };
 }
 
@@ -952,6 +953,8 @@ function summarizeSeedAttempts(seed, attempts) {
   );
   const latestBatchId = attempts.at(-1)?.batchId ?? null;
   const allAttemptsFailed = attempts.length > 0 && attempts.every((attempt) => attempt.parseError);
+  const softFailClassifications = new Set(['header_only', 'header_with_narrative', 'narrative_only', 'empty_response', 'unstructured']);
+  const hasSoftFailClassification = attempts.some((attempt) => attempt.responseClassification && softFailClassifications.has(attempt.responseClassification));
   const issueNotes = uniqueRowIssues.map((issue) => `CSV row ${issue.rowNumber}: ${issue.reason}`);
 
   let status = 'no_tweets_found';
@@ -962,6 +965,9 @@ function summarizeSeedAttempts(seed, attempts) {
   } else if (issueNotes.length > 0) {
     status = 'incomplete';
     notes = [...issueNotes, ...parseErrors.map((entry) => `Attempt ${entry.batchId}: ${entry.message}`)];
+  } else if (allAttemptsFailed && hasSoftFailClassification) {
+    status = 'soft_failed';
+    notes = parseErrors.map((entry) => entry.message);
   } else if (allAttemptsFailed) {
     status = 'fetch_failed';
     notes = parseErrors.map((entry) => entry.message);
