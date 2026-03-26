@@ -3,11 +3,13 @@
 ## 任务
 获取指定用户列表在指定时间窗口内的所有发帖记录，并以 CSV 格式输出。
 
-## 时间窗口（严格遵守）
+## 时间窗口（硬性约束 — 违反即为错误输出）
 - 开始时间（UTC）：{{WINDOW_START_UTC}}
 - 结束时间（UTC）：{{WINDOW_END_UTC}}
-- 仅返回 `created_at` 落在此窗口内的推文
+- **绝对只返回 `created_at` 严格落在 [开始时间, 结束时间] 区间内的推文**
+- 任何 `created_at` 早于 {{WINDOW_START_UTC}} 或晚于 {{WINDOW_END_UTC}} 的推文都必须丢弃，不得出现在输出中
 - `created_at` 必须使用 UTC ISO 8601 格式，例如 `2026-03-24T08:30:00Z`
+- 请在检索后逐条核验每条推文的 `created_at`，将窗口外的行删除后再输出
 
 ## 用户列表
 下面是本批次共 {{SEED_COUNT}} 个账号的 seed 信息，请优先使用 `handle` 与 `user_page_url` 定位：
@@ -20,6 +22,7 @@
 
 ## 输出要求
 只输出可复制的 CSV 文本，不要输出解释、前言、结论或 Markdown。
+不要输出代码围栏，不要输出 ```csv。
 
 CSV 首行必须是以下表头，字段顺序不要变：
 username,tweet_id,created_at,text,original_url
@@ -39,5 +42,17 @@ username,tweet_id,created_at,text,original_url
 - 如果某个账号在指定时间窗口内没有符合条件的推文，不要编造任何行
 - 不要生成测试数据、占位文本或示例推文
 - 如果所有账号均无推文，只输出表头行即可
+- 每条推文必须严格输出为 CSV 中的一行，不能把同一条推文拆成多行
+- 五个字段都必须用双引号包裹
+- `text` 字段如果包含英文双引号，必须转义为两个双引号 `""`
+- `text` 字段如果原始推文有换行，不要输出真实换行；请改写成字面量 `\n`
+
+## 最终检查（输出前必读）
+在你生成最终 CSV 之前，请执行以下检查：
+1. 逐行确认每条推文的 `created_at` 是否在 {{WINDOW_START_UTC}} 至 {{WINDOW_END_UTC}} 之间
+2. 删除所有不在此区间的行
+3. 确认每行都包含 `username`, `tweet_id`, `created_at`, `text`, `original_url` 五个字段，任何字段都不得为空
+4. 确认每条推文在 CSV 中只占一行，不存在因为 `text` 换行导致的拆行
+5. 确认每个字段都被双引号包裹
 
 请开始执行。

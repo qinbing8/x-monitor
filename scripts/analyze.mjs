@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { loadConfig, loadSourceDocuments, resolveMaybeRelative } from './config-loader.mjs';
 import { resolveAnalysisProfile } from './provider-resolver.mjs';
 import { ensureRunDir, readJsonArtifact, writeJsonArtifact, writeTextArtifact, resolveRunDate, findLatestRunDir } from './artifact-store.mjs';
+import { createLogger } from './logger.mjs';
+import { runRosterScoring } from './roster.mjs';
 import { postChatCompletions, withRetry } from './openai-compatible-client.mjs';
 
 const MIN_ANALYZE_TIMEOUT_MS = 300000;
@@ -164,11 +166,17 @@ export function buildTweetEvidenceBlock({ meta = {}, accounts = [], items = [], 
   return JSON.stringify(evidence, null, 2);
 }
 
-export async function runAnalysisWithContinuation({ profile, messages, fetchImpl, timeoutMs, maxContinuations = 2 }) {
+export async function runAnalysisWithContinuation({ profile, messages, fetchImpl, timeoutMs, maxContinuations = 2, logger } = {}) {
   let accumulatedText = '';
   let continuationRounds = 0;
   let lastFinishReason = null;
   const currentMessages = [...messages];
+  const startedAt = Date.now();
+  logger?.info('analysis_continuation_start', {
+    messageCount: currentMessages.length,
+    timeoutMs,
+    maxContinuations,
+  });
 
   for (let round = 0; round <= maxContinuations; round += 1) {
     const completion = await withRetry(
@@ -181,12 +189,21 @@ export async function runAnalysisWithContinuation({ profile, messages, fetchImpl
         maxTokens: profile.maxOutputTokens,
         messages: currentMessages,
         fetchImpl,
+        logger: logger?.child('llm'),
+        operationName: `analyze_round:${round}`,
       }),
       profile.retry,
+      { logger, operationName: `analyze_round:${round}` },
     );
 
     let chunkText = completion.text;
     lastFinishReason = completion.diagnostics?.finishReason ?? null;
+    logger?.debug('analysis_round_complete', {
+      round,
+      chunkLength: chunkText.length,
+      finishReason: lastFinishReason,
+      latencyMs: completion.diagnostics?.latencyMs ?? null,
+    });
 
     if (round > 0 && accumulatedText.length > 0 && chunkText.length > 0) {
       const checkLen = Math.min(OVERLAP_CHECK_LENGTH, accumulatedText.length, chunkText.length);
@@ -211,17 +228,20 @@ export async function runAnalysisWithContinuation({ profile, messages, fetchImpl
     text: accumulatedText,
     continuationRounds,
     truncated: lastFinishReason === 'length',
+    durationMs: Date.now() - startedAt,
   };
 }
 
 export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl } = {}) {
   const { config, skillRoot } = await loadConfig(configPath);
+  const logger = createLogger({ level: config.defaults?.logLevel, scope: 'analyze' });
   const sourceDocs = await loadSourceDocuments(config, skillRoot);
   const profile = resolveAnalysisProfile(config, sourceDocs, analysisProfile || config.analysis.activeProfile);
   const effectiveTimeoutMs = resolveAnalyzeTimeoutMs(profile.timeoutMs);
   const runDate = resolveRunDate(date);
   const fetchRunDir = await findLatestRunDir(skillRoot, config.defaults.outputDir, runDate);
   const runDir = await ensureRunDir(skillRoot, config.defaults.outputDir, runDate);
+  const startedAt = Date.now();
   const fetchResult = await readJsonArtifact(fetchRunDir, config.runtime.artifacts.fetchResult);
   const items = Array.isArray(fetchResult?.items) ? fetchResult.items : [];
   const accounts = Array.isArray(fetchResult?.accounts) ? fetchResult.accounts : [];
@@ -232,6 +252,33 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
   }
 
   const { signal: signalItems, noise: noiseItems } = filterNoiseTweets(items);
+  logger.info('analyze_start', {
+    runDate,
+    analysisProfile: profile.name,
+    accountCount: accounts.length,
+    tweetCount: items.length,
+    signalTweetCount: signalItems.length,
+    warningCount: warnings.length,
+  });
+
+  let rosterScoring = null;
+  try {
+    rosterScoring = await runRosterScoring({
+      config,
+      skillRoot,
+      runDate,
+      fetchResult,
+      profile,
+      fetchImpl,
+      runDir,
+      logger: logger.child('roster'),
+    });
+  } catch (error) {
+    logger.warn('roster_scoring_failed', {
+      runDate,
+      error: error?.message ?? String(error),
+    });
+  }
 
   const promptPath = resolveMaybeRelative(skillRoot, profile.promptFile);
   const promptTemplate = await readFile(promptPath, 'utf8');
@@ -268,6 +315,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
     fetchImpl,
     timeoutMs: effectiveTimeoutMs,
     maxContinuations: profile.maxContinuations ?? 2,
+    logger: logger.child('continuation'),
   });
 
   const outputText = continuationResult.text.trim();
@@ -292,6 +340,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
       continuationRounds: continuationResult.continuationRounds,
       truncated: continuationResult.truncated,
       coverage,
+      rosterScoring,
     },
     answer: {
       markdown: finalMarkdown,
@@ -300,6 +349,15 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
   };
   const analyzeResultPath = await writeJsonArtifact(runDir, config.runtime.artifacts.analyzeResult, analyzeResult);
   const finalReportPath = await writeTextArtifact(runDir, config.runtime.artifacts.finalReport, finalMarkdown);
+  logger.info('analyze_complete', {
+    runDate,
+    analysisProfile: profile.name,
+    tweetCount: items.length,
+    signalTweetCount: signalItems.length,
+    continuationRounds: continuationResult.continuationRounds,
+    truncated: continuationResult.truncated,
+    durationMs: Date.now() - startedAt,
+  });
   return {
     runDir,
     analyzeInputPath,
@@ -307,5 +365,6 @@ export async function runAnalyze({ configPath, date, analysisProfile, fetchImpl 
     finalReportPath,
     analysisProfile: profile.name,
     tweetCount: items.length,
+    rosterScoring,
   };
 }

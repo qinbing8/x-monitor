@@ -21,19 +21,20 @@
           "maxAttempts": 3,
           "backoffMs": 1500
         },
-        "concurrency": 2,
-        "batchSize": 1,
-        "refetchOnStatuses": ["no_tweets_found", "incomplete", "fetch_failed", "soft_failed"],
+        "concurrency": 4,
+        "batchSize": 3,
+        "refetchOnStatuses": ["incomplete", "fetch_failed", "soft_failed"],
         "refetchMaxRounds": 3,
-        "refetchBatchSize": 1,
-        "refetchConcurrency": 2,
+        "refetchBatchSize": 3,
+        "refetchConcurrency": 4,
         "timeWindowHours": 24,
         "includeTweetTypes": ["original", "repost", "quote"],
         "excludePureReplies": true,
-        "seedCsvPath": "./X 列表关注者.csv",
+        "seedCsvPath": "./X列表关注者.daily.csv",
         "promptFile": "assets/prompts/grok-fetch.txt",
         "precheck": {
           "enabled": true,
+          "staticFilterZeroPosts": true,
           "dormantThresholdDays": 7,
           "batchSize": 10,
           "timeoutMs": 30000,
@@ -41,6 +42,28 @@
           "promptFile": "assets/prompts/grok-precheck.txt"
         }
       }
+    }
+  },
+  "roster": {
+    "enabled": true,
+    "masterCsvPath": "./X列表关注者.csv",
+    "dailyCsvPath": "./X列表关注者.daily.csv",
+    "scoreFilePath": "./account-score.json",
+    "scoring": {
+      "enabled": true,
+      "promptFile": "assets/prompts/gpt-roster-score.txt",
+      "batchSize": 20,
+      "maxTweetsPerAccount": 3,
+      "defaultScore": 2,
+      "minScore": 0,
+      "maxScore": 5,
+      "dailyMinScore": 4,
+      "everyOtherDayMinScore": 2,
+      "weeklyMinScore": 1,
+      "dailyIntervalDays": 1,
+      "everyOtherDayIntervalDays": 2,
+      "weeklyIntervalDays": 7,
+      "coldIntervalDays": 28
     }
   },
   "analysis": {

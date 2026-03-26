@@ -65,6 +65,25 @@ export const FIXTURE_OUT_OF_WINDOW_FETCH_RESPONSE = [
   '```',
 ].join('\n');
 
+export const FIXTURE_MALFORMED_MULTILINE_FETCH_RESPONSE = [
+  '整理如下：',
+  '```csv',
+  'username,tweet_id,created_at,text,original_url',
+  'alice,190013,2026-03-23T03:00:00Z,Shipped a strict CSV parser fix,',
+  'with multiline notes and commas, still part of the same tweet,',
+  'and one final line,https://x.com/alice/status/190013',
+  'alice,190014,2026-03-23T05:00:00Z,Second update without an explicit url,',
+  'still the same tweet body',
+  '```',
+].join('\n');
+
+export const FIXTURE_HEADERLESS_FETCH_RESPONSE = [
+  '```csv',
+  '"alice","190015","2026-03-23T06:00:00Z","Headerless but otherwise valid row.","https://x.com/alice/status/190015"',
+  '"alice","190016","2026-03-23T07:30:00Z","Second row without a CSV header but with multiline text.\\nStill one tweet.","https://x.com/alice/status/190016"',
+  '```',
+].join('\n');
+
 export const FIXTURE_PRECHECK_RESPONSE_DORMANT = [
   'username,last_tweet_date',
   '"alice","2026-03-23T01:00:00Z"',
@@ -130,7 +149,7 @@ export async function createMockSkillFixture() {
     defaults: {
       mode: 'run',
       outputDir: './data',
-      logLevel: 'info',
+      logLevel: 'silent',
     },
     sources: {
       credentialFiles: {
@@ -229,6 +248,11 @@ export async function createMockSkillFixture() {
   await writeFile(
     join(skillRoot, 'assets', 'prompts', 'gpt-analyze.txt'),
     'Analyze tweets for {{REPORT_DATE}}:\n{{TWEET_EVIDENCE_BLOCK}}',
+    'utf8',
+  );
+  await writeFile(
+    join(skillRoot, 'assets', 'prompts', 'gpt-roster-score.txt'),
+    'Score roster accounts for {{REPORT_DATE}}:\n{{ACCOUNT_BATCH_JSON}}',
     'utf8',
   );
 

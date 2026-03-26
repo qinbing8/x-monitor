@@ -2,6 +2,7 @@
 import { pathToFileURL } from 'node:url';
 import { runFetch } from './fetch.mjs';
 import { runAnalyze } from './analyze.mjs';
+import { prepareDailyRoster } from './roster.mjs';
 
 export function parseArgs(argv) {
   const out = {
@@ -29,15 +30,24 @@ export function parseArgs(argv) {
   return out;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const options = parseArgs(argv);
+  const runFetchImpl = dependencies.runFetchImpl ?? runFetch;
+  const runAnalyzeImpl = dependencies.runAnalyzeImpl ?? runAnalyze;
+  const prepareDailyRosterImpl = dependencies.prepareDailyRosterImpl ?? prepareDailyRoster;
   if (!['fetch', 'analyze', 'run'].includes(options.mode)) {
     throw new Error(`Unsupported mode: ${options.mode}`);
   }
 
   const summary = { mode: options.mode };
   if (options.mode === 'fetch' || options.mode === 'run') {
-    summary.fetch = await runFetch({
+    if (!options.seedCsvPath) {
+      summary.roster = await prepareDailyRosterImpl({
+        configPath: options.configPath,
+        date: options.date,
+      });
+    }
+    summary.fetch = await runFetchImpl({
       configPath: options.configPath,
       date: options.date,
       seedCsvPath: options.seedCsvPath,
@@ -47,7 +57,7 @@ export async function main(argv = process.argv.slice(2)) {
     });
   }
   if (options.mode === 'analyze' || options.mode === 'run') {
-    summary.analyze = await runAnalyze({
+    summary.analyze = await runAnalyzeImpl({
       configPath: options.configPath,
       date: options.date,
       analysisProfile: options.analysisProfile,

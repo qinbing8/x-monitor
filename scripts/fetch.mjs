@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { loadConfig, loadSourceDocuments, resolveMaybeRelative } from './config-loader.mjs';
 import { resolveFetchProfile } from './provider-resolver.mjs';
 import { ensureRunDir, writeJsonArtifact, writeTextArtifact, resolveRunDate } from './artifact-store.mjs';
+import { createLogger } from './logger.mjs';
 import { postChatCompletions, withRetry } from './openai-compatible-client.mjs';
 
 const CSV_FENCE_RE = /```(?:csv|text)?\s*([\s\S]*?)```/i;
@@ -9,6 +10,8 @@ const CSV_HEADER_RE = /(^|\n)\s*"?username"?\s*,\s*"?tweet_id"?\s*,\s*"?created_
 const REQUIRED_TWEET_FIELDS = ['username', 'tweet_id', 'created_at', 'text', 'original_url'];
 const X_HANDLE_RE = /^[A-Za-z0-9_]{1,15}$/;
 const X_TWEET_URL_RE = /^https?:\/\/(?:www\.)?x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+$/i;
+const TWEET_ROW_START_RE = /^\s*"?(?<username>[A-Za-z0-9_]{1,15})"?\s*,\s*"?(?<tweetId>\d+)"?\s*,\s*"?(?<createdAt>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"?\s*,/;
+const TWEET_URL_FIELD_AT_END_RE = /,\s*"?(https?:\/\/(?:www\.)?x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+)"?\s*$/i;
 const MS_PER_HOUR = 60 * 60 * 1000;
 const NO_TWEET_NOTE = 'No qualifying tweets were returned for the last 24 hours.';
 const OUTSIDE_TIME_WINDOW_REASON = 'Tweet is outside the configured time window';
@@ -30,6 +33,11 @@ export function classifyRawResponse(rawText, csvRecordCount) {
   if (!text) return { classification: 'empty_response', detail: 'Response body is empty' };
 
   const hasHeader = CSV_HEADER_RE.test(text);
+  const normalizedText = stripCodeFences(text);
+  const normalizedLines = normalizedText.split(/\r?\n/).filter((line) => line.trim());
+  if (!hasHeader && csvRecordCount > 0 && normalizedLines.length > 0 && TWEET_ROW_START_RE.test(normalizedLines[0])) {
+    return { classification: 'headerless_csv', detail: 'Recovered data rows without a CSV header' };
+  }
   const lines = text.split(/\r?\n/).filter((line) => line.trim());
   const nonHeaderLines = hasHeader ? lines.slice(1).filter((line) => !CSV_HEADER_RE.test(line)) : lines;
   const nonHeaderText = nonHeaderLines.join(' ').trim();
@@ -107,6 +115,104 @@ export function parseCsv(csvText) {
   if (rows.length === 0) return [];
   const headers = rows[0].map((header) => String(header).replace(/^\uFEFF/, '').trim());
   return rows.slice(1).map((cells) => Object.fromEntries(headers.map((header, idx) => [header, cells[idx] ?? ''])));
+}
+
+function consumeCsvField(input, startIndex = 0) {
+  let index = startIndex;
+  while (index < input.length && /\s/.test(input[index]) && input[index] !== '\n') index += 1;
+  if (index >= input.length) {
+    return { value: '', nextIndex: index };
+  }
+
+  if (input[index] === '"') {
+    index += 1;
+    let value = '';
+    while (index < input.length) {
+      const char = input[index];
+      const next = input[index + 1];
+      if (char === '"' && next === '"') {
+        value += '"';
+        index += 2;
+        continue;
+      }
+      if (char === '"') {
+        index += 1;
+        break;
+      }
+      value += char;
+      index += 1;
+    }
+    while (index < input.length && /\s/.test(input[index]) && input[index] !== '\n') index += 1;
+    if (input[index] === ',') index += 1;
+    return { value, nextIndex: index };
+  }
+
+  let endIndex = index;
+  while (endIndex < input.length && input[endIndex] !== ',') endIndex += 1;
+  const value = input.slice(index, endIndex).trim();
+  if (input[endIndex] === ',') endIndex += 1;
+  return { value, nextIndex: endIndex };
+}
+
+function unquoteCsvField(value) {
+  const text = String(value ?? '').trim();
+  if (text.startsWith('"') && text.endsWith('"')) {
+    return text.slice(1, -1).replace(/""/g, '"');
+  }
+  return text;
+}
+
+function splitRecoveredTweetRowBlocks(csvText, options = {}) {
+  const hasHeader = options.hasHeader !== false;
+  const lines = String(csvText ?? '').replace(/\r/g, '').split('\n');
+  const rowBlocks = [];
+  let currentBlock = '';
+
+  for (const line of lines.slice(hasHeader ? 1 : 0)) {
+    if (TWEET_ROW_START_RE.test(line)) {
+      if (currentBlock) rowBlocks.push(currentBlock);
+      currentBlock = line;
+      continue;
+    }
+    if (!currentBlock) continue;
+    if (TWEET_URL_FIELD_AT_END_RE.test(currentBlock)) continue;
+    currentBlock += `\n${line}`;
+  }
+
+  if (currentBlock) rowBlocks.push(currentBlock);
+  return rowBlocks;
+}
+
+function parseRecoveredTweetRow(rowBlock) {
+  if (!TWEET_ROW_START_RE.test(rowBlock)) return null;
+
+  const usernameField = consumeCsvField(rowBlock, 0);
+  const tweetIdField = consumeCsvField(rowBlock, usernameField.nextIndex);
+  const createdAtField = consumeCsvField(rowBlock, tweetIdField.nextIndex);
+  const remainder = rowBlock.slice(createdAtField.nextIndex);
+  const urlMatch = remainder.match(TWEET_URL_FIELD_AT_END_RE);
+  const textPart = urlMatch ? remainder.slice(0, urlMatch.index) : remainder;
+  const originalUrl = urlMatch?.[1] ?? '';
+  const text = unquoteCsvField(textPart).replace(/\\n/g, '\n').trim();
+
+  return {
+    username: usernameField.value,
+    tweet_id: tweetIdField.value,
+    created_at: createdAtField.value,
+    text,
+    original_url: originalUrl,
+  };
+}
+
+function parseRecoveredTweetCsv(csvText, options = {}) {
+  const rowBlocks = splitRecoveredTweetRowBlocks(csvText, options);
+  const records = rowBlocks
+    .map((rowBlock) => parseRecoveredTweetRow(rowBlock))
+    .filter(Boolean);
+  return {
+    rowBlockCount: rowBlocks.length,
+    records,
+  };
 }
 
 function trimString(value) {
@@ -263,6 +369,26 @@ function inspectTweetRecord(record) {
   };
 }
 
+function summarizeTweetRecordQuality(records) {
+  let validIdentityCount = 0;
+  let invalidFieldCount = 0;
+
+  for (const record of records) {
+    const inspected = inspectTweetRecord(record);
+    if (inspected.fieldIssues.length === 0) {
+      validIdentityCount += 1;
+    } else {
+      invalidFieldCount += 1;
+    }
+  }
+
+  return {
+    recordCount: records.length,
+    validIdentityCount,
+    invalidFieldCount,
+  };
+}
+
 function filterTweetCsvRecords(records) {
   return records.filter((record) => inspectTweetRecord(record).hasTweetIdentityShape);
 }
@@ -317,11 +443,61 @@ export function extractCsvPayload(text) {
   throw new Error('Could not locate a tweet CSV header in the fetch response');
 }
 
+function extractHeaderlessCsvPayload(text) {
+  const input = String(text ?? '').replace(/^\uFEFF/, '').trim();
+  const candidates = [];
+  const fenced = input.match(CSV_FENCE_RE);
+  if (fenced?.[1]) candidates.push(fenced[1]);
+  candidates.push(input);
+
+  for (const candidate of candidates) {
+    const normalized = String(candidate ?? '').replace(/^\uFEFF/, '').trim();
+    const lines = normalized.split(/\r?\n/);
+    const firstRowIndex = lines.findIndex((line) => TWEET_ROW_START_RE.test(line));
+    if (firstRowIndex < 0) continue;
+    return lines.slice(firstRowIndex).join('\n').trim();
+  }
+
+  throw new Error('Could not locate headerless tweet CSV rows in the fetch response');
+}
+
 export function parseTweetCsvResponse(text) {
-  const csvText = extractCsvPayload(text);
+  let csvText;
+  let hasHeader = true;
+  try {
+    csvText = extractCsvPayload(text);
+  } catch (error) {
+    csvText = extractHeaderlessCsvPayload(text);
+    hasHeader = false;
+  }
+
+  const strictRecords = hasHeader ? parseCsv(csvText) : [];
+  const recovered = parseRecoveredTweetCsv(csvText, { hasHeader });
+  const strictStats = summarizeTweetRecordQuality(strictRecords);
+  const recoveredStats = summarizeTweetRecordQuality(recovered.records);
+  const useRecovered =
+    !hasHeader
+    || (
+    recoveredStats.validIdentityCount > strictStats.validIdentityCount
+    || (
+      recoveredStats.validIdentityCount === strictStats.validIdentityCount
+      && recoveredStats.validIdentityCount > 0
+      && recoveredStats.invalidFieldCount < strictStats.invalidFieldCount
+      && recovered.rowBlockCount >= strictStats.validIdentityCount
+    ));
+
   return {
     csvText,
-    records: parseCsv(csvText),
+    records: useRecovered ? recovered.records : strictRecords,
+    parserDiagnostics: {
+      strategy: !hasHeader ? 'headerless_rows' : useRecovered ? 'recovered_rows' : 'strict_csv',
+      strict: strictStats,
+      recovered: {
+        ...recoveredStats,
+        rowBlockCount: recovered.rowBlockCount,
+      },
+      hasHeader,
+    },
   };
 }
 
@@ -505,12 +681,13 @@ export function summarizeBatchCoverage(seeds, items, rowIssues, batchId, parseEr
   });
 }
 
-async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profile, fetchImpl, referenceTime }) {
+async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profile, fetchImpl, referenceTime, logger } = {}) {
   const resolvedBatchId = batchId ?? `batch-${batchIndex + 1}`;
   const timeWindowHours = profile.timeWindowHours ?? 24;
   const refTimeMs = referenceTime ? Date.parse(referenceTime) : Date.now();
   const windowEndUtc = new Date(refTimeMs).toISOString();
   const windowStartUtc = new Date(refTimeMs - timeWindowHours * MS_PER_HOUR).toISOString();
+  const startedAt = Date.now();
   const renderedPrompt = renderTemplate(promptTemplate, {
     SEED_COUNT: batch.length,
     TIME_WINDOW_HOURS: timeWindowHours,
@@ -525,6 +702,12 @@ async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profil
 
   let rawText = '';
   let diagnostics = null;
+  logger?.debug('fetch_batch_start', {
+    batchId: resolvedBatchId,
+    batchIndex,
+    seedCount: batch.length,
+    seedHandles: batch.map((seed) => seed.handle),
+  });
   try {
     const completion = await withRetry(
       () => postChatCompletions({
@@ -536,13 +719,16 @@ async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profil
         maxTokens: profile.maxOutputTokens ?? 4000,
         messages: [{ role: 'user', content: renderedPrompt }],
         fetchImpl,
+        logger: logger?.child('llm'),
+        operationName: `fetch_batch:${resolvedBatchId}`,
       }),
       profile.retry,
+      { logger, operationName: `fetch_batch:${resolvedBatchId}` },
     );
 
     rawText = completion.text.trim();
     diagnostics = completion.diagnostics ?? null;
-    const { csvText, records } = parseTweetCsvResponse(rawText);
+    const { csvText, records, parserDiagnostics } = parseTweetCsvResponse(rawText);
     const { items, rowIssues } = normalizeTweetRecords(batch, records, resolvedBatchId, {
       referenceTime,
       timeWindowHours: profile.timeWindowHours,
@@ -553,7 +739,7 @@ async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profil
     const responseClassification = classifyRawResponse(rawText, records.length);
     const coverage = summarizeBatchCoverage(batch, items, rowIssues, resolvedBatchId, null, responseClassification.classification);
 
-    return {
+    const result = {
       batchId: resolvedBatchId,
       seedIds: batch.map((seed) => seed.seedId),
       rawText,
@@ -565,10 +751,25 @@ async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profil
       coverage,
       diagnostics,
       responseClassification,
+      parserDiagnostics,
     };
+    logger?.debug('fetch_batch_complete', {
+      batchId: resolvedBatchId,
+      seedCount: batch.length,
+      itemCount: items.length,
+      rowIssueCount: rowIssues.length,
+      parseError: null,
+      durationMs: Date.now() - startedAt,
+      responseClassification: responseClassification?.classification ?? null,
+      latencyMs: diagnostics?.latencyMs ?? null,
+      parserStrategy: parserDiagnostics?.strategy ?? null,
+      strictValidRecordCount: parserDiagnostics?.strict?.validIdentityCount ?? null,
+      recoveredValidRecordCount: parserDiagnostics?.recovered?.validIdentityCount ?? null,
+    });
+    return result;
   } catch (error) {
     const responseClassification = classifyRawResponse(rawText, 0);
-    return {
+    const result = {
       batchId: resolvedBatchId,
       seedIds: batch.map((seed) => seed.seedId),
       rawText,
@@ -580,7 +781,16 @@ async function runSeedBatch({ batch, batchIndex, batchId, promptTemplate, profil
       coverage: summarizeBatchCoverage(batch, [], [], resolvedBatchId, error.message, responseClassification.classification),
       diagnostics,
       responseClassification,
+      parserDiagnostics: null,
     };
+    logger?.warn('fetch_batch_failed', {
+      batchId: resolvedBatchId,
+      seedCount: batch.length,
+      parseError: error?.message ?? String(error),
+      durationMs: Date.now() - startedAt,
+      responseClassification: responseClassification?.classification ?? null,
+    });
+    return result;
   }
 }
 
@@ -645,10 +855,20 @@ function orderSeedsForRefetch(seeds, outcomesBySeedId) {
   });
 }
 
-async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchImpl, referenceTime, concurrency, attemptKind = 'initial', round = 0, batchIdBuilder } = {}) {
+async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchImpl, referenceTime, concurrency, attemptKind = 'initial', round = 0, batchIdBuilder, logger } = {}) {
   const batchResults = [];
+  const startedAt = Date.now();
+  const totalSeedCount = seedBatches.reduce((sum, batch) => sum + batch.length, 0);
+  logger?.info('fetch_batches_start', {
+    attemptKind,
+    round,
+    batchCount: seedBatches.length,
+    totalSeedCount,
+    concurrency,
+  });
   for (let offset = 0; offset < seedBatches.length; offset += concurrency) {
     const window = seedBatches.slice(offset, offset + concurrency);
+    const windowStartedAt = Date.now();
     const windowResults = await Promise.all(
       window.map((batch, index) => runSeedBatch({
         batch,
@@ -658,10 +878,25 @@ async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchI
         profile,
         fetchImpl,
         referenceTime,
+        logger: logger?.child(`batch_${offset + index + 1}`),
       })),
     );
     batchResults.push(...windowResults.map((result) => ({ ...result, attemptKind, round })));
+    logger?.debug('fetch_batch_window_complete', {
+      attemptKind,
+      round,
+      offset,
+      windowBatchCount: window.length,
+      durationMs: Date.now() - windowStartedAt,
+    });
   }
+  logger?.info('fetch_batches_complete', {
+    attemptKind,
+    round,
+    batchCount: batchResults.length,
+    totalSeedCount,
+    durationMs: Date.now() - startedAt,
+  });
   return batchResults;
 }
 
@@ -824,6 +1059,30 @@ function countByStatus(accounts, status) {
   return accounts.filter((account) => account.status === status).length;
 }
 
+function buildZeroPostDormantSeed(seed) {
+  return {
+    seedId: seed.seedId,
+    handle: seed.handle,
+    displayName: seed.displayName,
+    userPageUrl: seed.userPageUrl,
+    postCount: seed.postCount,
+    lastTweetDate: null,
+    daysSinceLastTweet: null,
+    dormantReason: 'zero_posts',
+    status: 'dormant_skipped',
+  };
+}
+
+function buildDormantAccountNote(entry) {
+  if (entry.dormantReason === 'zero_posts') {
+    return 'Dormant: skipped because seed CSV reports postCount=0.';
+  }
+  if (entry.lastTweetDate && Number.isFinite(entry.daysSinceLastTweet)) {
+    return `Dormant: last tweet ${entry.lastTweetDate} (${entry.daysSinceLastTweet} days ago)`;
+  }
+  return 'Dormant: skipped by precheck.';
+}
+
 const PRECHECK_CSV_HEADER_RE = /(^|\n)\s*"?username"?\s*,\s*"?last_tweet_date"?/i;
 
 function extractPrecheckCsvPayload(text) {
@@ -844,7 +1103,7 @@ function extractPrecheckCsvPayload(text) {
   return null;
 }
 
-export async function runActivityPrecheck({ seeds, profile, fetchImpl, referenceTime, precheckConfig }) {
+export async function runActivityPrecheck({ seeds, profile, fetchImpl, referenceTime, precheckConfig, logger } = {}) {
   const promptPath = resolveMaybeRelative(
     undefined,
     precheckConfig.promptFile,
@@ -870,6 +1129,13 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
   const activeSeeds = [];
   const dormantSeeds = [];
   const rawResponses = [];
+  const startedAt = Date.now();
+  logger?.info('precheck_start', {
+    seedCount: seeds.length,
+    batchCount: batches.length,
+    batchSize,
+    dormantThresholdDays,
+  });
 
   for (const batch of batches) {
     const handleList = batch.map((seed) => seed.handle).filter(Boolean).join(', ');
@@ -879,6 +1145,7 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
     });
 
     let rawText = '';
+    const batchStartedAt = Date.now();
     try {
       const completion = await withRetry(
         () => postChatCompletions({
@@ -890,13 +1157,21 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
           maxTokens: maxOutputTokens,
           messages: [{ role: 'user', content: renderedPrompt }],
           fetchImpl,
+          logger: logger?.child('llm'),
+          operationName: `precheck:${handleList || 'batch'}`,
         }),
         profile.retry,
+        { logger, operationName: `precheck:${handleList || 'batch'}` },
       );
       rawText = completion.text.trim();
     } catch {
       for (const seed of batch) activeSeeds.push(seed);
       rawResponses.push({ handles: batch.map((s) => s.handle), rawText, error: 'request_failed' });
+      logger?.warn('precheck_batch_failed', {
+        handleList,
+        seedCount: batch.length,
+        durationMs: Date.now() - batchStartedAt,
+      });
       continue;
     }
 
@@ -905,6 +1180,11 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
     const csvPayload = extractPrecheckCsvPayload(rawText);
     if (!csvPayload) {
       for (const seed of batch) activeSeeds.push(seed);
+      logger?.debug('precheck_batch_no_csv', {
+        handleList,
+        seedCount: batch.length,
+        durationMs: Date.now() - batchStartedAt,
+      });
       continue;
     }
 
@@ -942,13 +1222,25 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
         activeSeeds.push(seed);
       }
     }
+    logger?.debug('precheck_batch_complete', {
+      handleList,
+      seedCount: batch.length,
+      durationMs: Date.now() - batchStartedAt,
+    });
   }
 
+  logger?.info('precheck_complete', {
+    seedCount: seeds.length,
+    activeSeedCount: activeSeeds.length,
+    dormantSeedCount: dormantSeeds.length,
+    durationMs: Date.now() - startedAt,
+  });
   return { activeSeeds, dormantSeeds, rawResponses };
 }
 
 export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetchImpl, referenceTime, skipPrecheck } = {}) {
   const { config, skillRoot } = await loadConfig(configPath);
+  const logger = createLogger({ level: config.defaults?.logLevel, scope: 'fetch' });
   const sourceDocs = await loadSourceDocuments(config, skillRoot);
   const profile = resolveFetchProfile(config, sourceDocs, config.fetch.activeProfile);
   const promptPath = resolveMaybeRelative(skillRoot, profile.promptFile);
@@ -972,26 +1264,52 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
   const runDate = resolveRunDate(date);
   const resolvedReferenceTime = resolveReferenceTime(referenceTime, runDate);
   const runDir = await ensureRunDir(skillRoot, config.defaults.outputDir, runDate);
+  const startedAt = Date.now();
 
   const precheckConfig = profile.precheck ?? {};
   const precheckEnabled = precheckConfig.enabled === true && !skipPrecheck;
-  let effectiveSeeds = seeds;
-  let dormantAccounts = [];
+
+  // Treat the static zero-post shortcut as part of precheck so --skip-precheck remains authoritative.
+  const staticFilterEnabled = precheckEnabled && precheckConfig.staticFilterZeroPosts === true;
+  const staticDormant = staticFilterEnabled
+    ? seeds.filter((seed) => seed.postCount === 0).map(buildZeroPostDormantSeed)
+    : [];
+  const staticActive = staticFilterEnabled
+    ? seeds.filter((seed) => seed.postCount !== 0)
+    : seeds;
+
+  let effectiveSeeds = staticActive;
+  let dormantAccounts = staticDormant;
   let precheckRawResponses = [];
+  logger.info('fetch_start', {
+    runDate,
+    seedCount: seeds.length,
+    batchSize: effectiveBatchSize,
+    concurrency: effectiveConcurrency,
+    precheckEnabled,
+    staticFilterZeroPosts: staticFilterEnabled,
+    refetchEnabled: refetchConfig.enabled,
+    refetchMaxRounds: refetchConfig.maxRounds,
+  });
 
   if (precheckEnabled) {
     const precheckPromptPath = resolveMaybeRelative(skillRoot, precheckConfig.promptFile ?? 'assets/prompts/grok-precheck.txt');
     const resolvedPrecheckConfig = { ...precheckConfig, promptFile: precheckPromptPath };
     const precheckResult = await runActivityPrecheck({
-      seeds,
+      seeds: staticActive,
       profile,
       fetchImpl,
       referenceTime: resolvedReferenceTime,
       precheckConfig: resolvedPrecheckConfig,
+      logger: logger.child('precheck'),
     });
     effectiveSeeds = precheckResult.activeSeeds;
-    dormantAccounts = precheckResult.dormantSeeds;
+    dormantAccounts = [...staticDormant, ...precheckResult.dormantSeeds];
     precheckRawResponses = precheckResult.rawResponses;
+    logger.info('fetch_post_precheck', {
+      activeSeedCount: effectiveSeeds.length,
+      dormantSeedCount: dormantAccounts.length,
+    });
   }
 
   const seedBatches = chunkArray(effectiveSeeds, effectiveBatchSize);
@@ -1033,6 +1351,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     concurrency: effectiveConcurrency,
     attemptKind: 'initial',
     round: 0,
+    logger: logger.child('initial'),
   });
   recordSeedAttempts(seedAttempts, seedById, executedBatchResults);
 
@@ -1051,6 +1370,13 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       const orderedSeeds = orderSeedsForRefetch(seedsToRefetch, outcomesBySeedId);
       refetchRoundCount = round;
       for (const seed of orderedSeeds) refetchedSeedIds.add(seed.seedId);
+      const roundStartedAt = Date.now();
+      logger.info('fetch_refetch_round_start', {
+        round,
+        seedCount: orderedSeeds.length,
+        batchSize: refetchConfig.batchSize,
+        concurrency: refetchConfig.concurrency,
+      });
 
       const refetchBatches = chunkArray(orderedSeeds, refetchConfig.batchSize);
       const refetchResults = await executeSeedBatches({
@@ -1063,10 +1389,17 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
         attemptKind: 'refetch',
         round,
         batchIdBuilder: (index) => `refetch-r${round}-batch-${index + 1}`,
+        logger: logger.child(`refetch_round_${round}`),
       });
       executedBatchResults.push(...refetchResults);
       recordSeedAttempts(seedAttempts, seedById, refetchResults);
       currentOutcomes = buildCurrentOutcomes(effectiveSeeds, seedAttempts);
+      logger.info('fetch_refetch_round_complete', {
+        round,
+        seedCount: orderedSeeds.length,
+        unresolvedSeedCount: currentOutcomes.filter((outcome) => refetchStatusSet.has(outcome.account.status)).length,
+        durationMs: Date.now() - roundStartedAt,
+      });
     }
   }
 
@@ -1082,11 +1415,12 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       batchId: null,
       status: 'dormant_skipped',
       tweetCount: 0,
-      notes: [`Dormant: last tweet ${entry.lastTweetDate} (${entry.daysSinceLastTweet} days ago)`],
+      notes: [buildDormantAccountNote(entry)],
       initialStatus: 'dormant_skipped',
       wasRefetched: false,
       refetchAttemptCount: 0,
       recoveredByRefetch: false,
+      dormantReason: entry.dormantReason ?? null,
       lastTweetDate: entry.lastTweetDate,
       daysSinceLastTweet: entry.daysSinceLastTweet,
     })),
@@ -1163,6 +1497,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       responseClassification: result.responseClassification?.classification ?? null,
       responseClassificationDetail: result.responseClassification?.detail ?? null,
       diagnostics: result.diagnostics ?? null,
+      parserDiagnostics: result.parserDiagnostics ?? null,
       rawText: result.rawText,
     })),
   };
@@ -1211,6 +1546,17 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     warnings,
   };
   const fetchResultPath = await writeJsonArtifact(runDir, config.runtime.artifacts.fetchResult, fetchResult);
+  logger.info('fetch_complete', {
+    runDate,
+    activeSeedCount: effectiveSeeds.length,
+    dormantSeedCount: dormantAccounts.length,
+    tweetCount: items.length,
+    coveredAccountCount: countByStatus(accounts, 'covered'),
+    incompleteAccountCount: countByStatus(accounts, 'incomplete'),
+    failedAccountCount: countByStatus(accounts, 'fetch_failed'),
+    refetchRoundCount,
+    durationMs: Date.now() - startedAt,
+  });
 
   return {
     runDir,
