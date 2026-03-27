@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { withRetry, postChatCompletions } from '../scripts/openai-compatible-client.mjs';
+import { createCompletionResponse } from '../support/fixtures.mjs';
 
 test('withRetry retries until the task succeeds', async () => {
   let attempts = 0;
@@ -71,4 +72,33 @@ test('postChatCompletions surfaces HTTP failures with status metadata', async ()
     }),
     /HTTP 429: rate limit/,
   );
+});
+
+test('postChatCompletions can consume streaming chat completion responses', async () => {
+  let requestedStream = null;
+  const completion = await postChatCompletions({
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'test-key',
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: 'hello' }],
+    timeoutMs: 5000,
+    temperature: 0,
+    maxTokens: 32,
+    stream: true,
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requestedStream = body.stream;
+      return createCompletionResponse({
+        content: 'world',
+        finishReason: 'stop',
+        usage: { prompt_tokens: 9, completion_tokens: 4 },
+      }, body);
+    },
+  });
+
+  assert.equal(requestedStream, true);
+  assert.equal(completion.text, 'world');
+  assert.equal(completion.diagnostics.finishReason, 'stop');
+  assert.equal(completion.diagnostics.promptTokens, 9);
+  assert.equal(completion.diagnostics.completionTokens, 4);
 });

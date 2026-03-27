@@ -10,6 +10,11 @@ export const FIXTURE_OPENCLAW = {
         apiKey: 'gpt-key',
         models: [{ id: 'gpt-5.4(xhigh)' }],
       },
+      'router-gpt-backup': {
+        baseUrl: 'https://gpt-backup.example/v1',
+        apiKey: 'gpt-backup-key',
+        models: [{ id: 'gpt-5.4-mini' }, { id: 'gpt-5.4' }],
+      },
       anyrouter: {
         baseUrl: 'https://claude.example/v1',
         apiKey: 'claude-key',
@@ -180,6 +185,8 @@ export async function createMockSkillFixture() {
         'gpt-default': {
           providerRef: 'gpt',
           modelRef: 'gpt-main',
+          rosterModelRef: 'gpt-main-mini',
+          screeningModelRef: 'gpt-main-mini',
           apiProtocol: 'openai-compatible',
           timeoutMs: 5000,
           retry: { maxAttempts: 1, backoffMs: 50 },
@@ -208,6 +215,10 @@ export async function createMockSkillFixture() {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt' },
         mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', models: 'models' },
       },
+      'gpt-backup': {
+        configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt-backup' },
+        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', models: 'models' },
+      },
       claude: {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.anyrouter' },
         mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', models: 'models' },
@@ -215,6 +226,7 @@ export async function createMockSkillFixture() {
     },
     models: {
       'gpt-main': { providerRef: 'gpt', modelId: 'gpt-5.4(xhigh)' },
+      'gpt-main-mini': { providerRef: 'gpt-backup', modelId: 'gpt-5.4-mini' },
       'claude-main': { providerRef: 'claude', modelId: 'claude-sonnet-4-6' },
     },
     runtime: {
@@ -265,52 +277,81 @@ export async function createMockSkillFixture() {
   };
 }
 
-export function createCompletionFetch(content) {
-  return async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({
-      choices: [{ message: { content } }],
-    }),
-  });
-}
-
-export function createCompletionFetchSequence(contents) {
-  let index = 0;
-  return async () => {
-    const safeContents = Array.isArray(contents) && contents.length > 0 ? contents : [''];
-    const content = safeContents[Math.min(index, safeContents.length - 1)];
-    index += 1;
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        choices: [{ message: { content } }],
-      }),
-    };
-  };
-}
-
-export function createCompletionFetchSequenceWithFinishReason(items) {
-  let index = 0;
-  return async () => {
-    const safeItems = Array.isArray(items) && items.length > 0 ? items : [{ content: '', finishReason: 'stop' }];
-    const item = safeItems[Math.min(index, safeItems.length - 1)];
-    index += 1;
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({
-        choices: [{ message: { content: item.content }, finish_reason: item.finishReason }],
-      }),
-    };
-  };
-}
-
 export async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
 }
 
 export async function readText(filePath) {
   return readFile(filePath, 'utf8');
+}
+
+function normalizeCompletionItem(item) {
+  if (typeof item === 'string') return { content: item, finishReason: 'stop', usage: null };
+  return {
+    content: item?.content ?? '',
+    finishReason: item?.finishReason ?? 'stop',
+    usage: item?.usage ?? null,
+  };
+}
+
+function createStreamingCompletionResponse(item) {
+  const encoder = new TextEncoder();
+  const normalized = normalizeCompletionItem(item);
+  const chunk = {
+    choices: [{
+      delta: { content: normalized.content },
+      finish_reason: normalized.finishReason,
+    }],
+  };
+  if (normalized.usage) chunk.usage = normalized.usage;
+  return {
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }),
+  };
+}
+
+export function createCompletionResponse(item, requestBody = {}) {
+  const normalized = normalizeCompletionItem(item);
+  if (requestBody?.stream) return createStreamingCompletionResponse(normalized);
+
+  const payload = {
+    choices: [{ message: { content: normalized.content }, finish_reason: normalized.finishReason }],
+  };
+  if (normalized.usage) payload.usage = normalized.usage;
+  return {
+    ok: true,
+    status: 200,
+    json: async () => payload,
+  };
+}
+
+export function createCompletionFetch(content) {
+  return async (_url, options) => createCompletionResponse(content, JSON.parse(options?.body ?? '{}'));
+}
+
+export function createCompletionFetchSequence(contents) {
+  let index = 0;
+  return async (_url, options) => {
+    const safeContents = Array.isArray(contents) && contents.length > 0 ? contents : [''];
+    const content = safeContents[Math.min(index, safeContents.length - 1)];
+    index += 1;
+    return createCompletionResponse(content, JSON.parse(options?.body ?? '{}'));
+  };
+}
+
+export function createCompletionFetchSequenceWithFinishReason(items) {
+  let index = 0;
+  return async (_url, options) => {
+    const safeItems = Array.isArray(items) && items.length > 0 ? items : [{ content: '', finishReason: 'stop' }];
+    const item = safeItems[Math.min(index, safeItems.length - 1)];
+    index += 1;
+    return createCompletionResponse(item, JSON.parse(options?.body ?? '{}'));
+  };
 }
