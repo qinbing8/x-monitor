@@ -9,7 +9,7 @@ export const FIXTURE_OPENCLAW = {
         baseUrl: 'https://gpt.example/v1',
         apiKey: 'gpt-key',
         api: 'openai-responses',
-        models: [{ id: 'gpt-5.4(xhigh)' }],
+        models: [{ id: 'gpt-5.4-xhigh' }],
       },
       'router-gpt-backup': {
         baseUrl: 'https://gpt-backup.example/v1',
@@ -228,7 +228,7 @@ export async function createMockSkillFixture() {
       },
     },
     models: {
-      'gpt-main': { providerRef: 'gpt', modelId: 'gpt-5.4(xhigh)' },
+      'gpt-main': { providerRef: 'gpt', modelId: 'gpt-5.4-xhigh' },
       'gpt-main-mini': { providerRef: 'gpt-backup', modelId: 'gpt-5.4-mini' },
       'claude-main': { providerRef: 'claude', modelId: 'claude-sonnet-4-6' },
     },

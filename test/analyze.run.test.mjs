@@ -73,10 +73,10 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.meta.analysisProfile, 'gpt-default');
     assert.equal(analyzeResult.meta.provider, 'gpt');
-    assert.equal(analyzeResult.meta.model, 'gpt-5.4(xhigh)');
+    assert.equal(analyzeResult.meta.model, 'gpt-5.4-xhigh');
     assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
     assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
-    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4(xhigh)');
+    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4-xhigh');
     assert.equal(analyzeResult.meta.tweetCount, 2);
     assert.equal(analyzeResult.meta.coverage.failedAccountCount, 0);
     assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
@@ -218,7 +218,7 @@ test('runAnalyze can update roster scores via GPT before writing the daily brief
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.meta.rosterScoring.scoredAccountCount, 1);
     assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
-    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4(xhigh)');
+    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4-xhigh');
 
     const scoreState = await readJson(join(fixture.skillRoot, 'account-score.json'));
     const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
@@ -452,7 +452,7 @@ test('runAnalyze writes a final-draft diagnostic artifact when the brief request
     const analyzeError = await readJson(failure.analyzeErrorPath);
     assert.equal(analyzeError.stage, 'final_draft');
     assert.equal(analyzeError.analysisProfile, 'gpt-default');
-    assert.equal(analyzeError.briefModel, 'gpt-5.4(xhigh)');
+    assert.equal(analyzeError.briefModel, 'gpt-5.4-xhigh');
     assert.equal(analyzeError.candidateSelectionMode, 'direct_heuristic');
     assert.equal(analyzeError.screeningChunkCount, 0);
     assert.equal(analyzeError.promptSignalTweetCount, 2);
@@ -535,7 +535,7 @@ test('runAnalyze can resume from analyze.input.json and only rerun the final bri
     });
 
     assert.equal(requests.length, 1);
-    assert.equal(requests[0].model, 'gpt-5.4(xhigh)');
+    assert.equal(requests[0].model, 'gpt-5.4-xhigh');
     assert.equal(requests[0].stream, true);
     assert.equal(resumedAnalyze.runDir, initialAnalyze.runDir);
 
@@ -687,14 +687,14 @@ test('runAnalyze screens large signal sets in chunks before generating the final
     assert.equal(analyzeResult.meta.promptSignalTweetCount, 6);
     assert.equal(analyzeResult.meta.omittedSignalTweetCount, 44);
     assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
-    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4(xhigh)');
+    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4-xhigh');
 
     assert.equal(requests.length, 5);
     assert.equal(requests[0].model, 'gpt-5.4-mini');
     assert.equal(requests[1].model, 'gpt-5.4-mini');
     assert.equal(requests[2].model, 'gpt-5.4-mini');
     assert.equal(requests[3].model, 'gpt-5.4-mini');
-    assert.equal(requests[4].model, 'gpt-5.4(xhigh)');
+    assert.equal(requests[4].model, 'gpt-5.4-xhigh');
     assert.equal(requests[0].stream, false);
     assert.equal(requests[1].stream, false);
     assert.equal(requests[2].stream, false);

@@ -159,7 +159,7 @@
   "models": {
     "gpt-main": {
       "providerRef": "gpt",
-      "modelId": "gpt-5.4(xhigh)"
+      "modelId": "gpt-5.4-xhigh"
     },
     "gpt-main-mini": {
       "providerRef": "gpt-backup",
