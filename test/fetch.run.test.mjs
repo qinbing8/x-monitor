@@ -19,6 +19,42 @@ import {
   readText,
 } from '../support/fixtures.mjs';
 
+async function withMockedNow(nowIso, task) {
+  const fixedMs = Date.parse(nowIso);
+  const RealDate = globalThis.Date;
+  class MockDate extends RealDate {
+    constructor(...args) {
+      super(...(args.length === 0 ? [fixedMs] : args));
+    }
+    static now() {
+      return fixedMs;
+    }
+  }
+
+  globalThis.Date = MockDate;
+  try {
+    return await task();
+  } finally {
+    globalThis.Date = RealDate;
+  }
+}
+
+async function captureStderr(fn) {
+  const chunks = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk, encoding, callback) => {
+    chunks.push(String(chunk));
+    if (typeof encoding === 'function') encoding();
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+  try {
+    return await fn(chunks);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+}
+
 test('repo fetch profiles keep baseline recovery defaults for live runs', async () => {
   const repoConfig = await readJson(fileURLToPath(new URL('../config.json', import.meta.url)));
   const exampleConfig = await readJson(fileURLToPath(new URL('../config.example.json', import.meta.url)));
@@ -90,6 +126,30 @@ test('runFetch smoke writes fetch artifacts from a controlled completion', async
   }
 });
 
+test('runFetch uses the current execution time as the default window anchor when only date is provided', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const result = await withMockedNow(FIXTURE_REFERENCE_TIME, () => runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    }));
+
+    assert.equal(result.windowStartUtc, '2026-03-22T14:21:05.770Z');
+    assert.equal(result.windowEndUtc, FIXTURE_REFERENCE_TIME);
+
+    const fetchInput = await readJson(result.fetchInputPath);
+    assert.equal(fetchInput.task.windowEndUtc, FIXTURE_REFERENCE_TIME);
+
+    const fetchResult = await readJson(result.fetchResultPath);
+    assert.equal(fetchResult.meta.fetchedAt, FIXTURE_REFERENCE_TIME);
+    assert.equal(fetchResult.meta.windowEndUtc, FIXTURE_REFERENCE_TIME);
+    assert.equal(fetchResult.items.length, 2);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runFetch ignores prose no-data rows mixed into CSV output without unmatched warnings', async () => {
   const fixture = await createMockSkillFixture();
   try {
@@ -138,8 +198,60 @@ test('runFetch excludes tweets outside the deterministic 24h window from result 
     assert.equal(fetchResult.meta.fetchedAt, FIXTURE_REFERENCE_TIME);
     assert.equal(fetchResult.items[0].tweetId, '190011');
     assert.equal(fetchResult.warnings.some((warning) => warning.type === 'tweet_outside_time_window'), true);
-    assert.equal(fetchResult.accounts[0].status, 'incomplete');
-    assert.equal(fetchResult.accounts[0].notes.some((note) => note.includes('outside the configured time window')), true);
+    assert.equal(fetchResult.accounts[0].status, 'covered');
+    assert.equal(fetchResult.accounts[0].notes.length, 0);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runFetch records timeout diagnostics in artifacts and emits batch timeout logs', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    config.defaults.logLevel = 'info';
+    Object.assign(config.fetch.profiles['grok-default'], {
+      batchSize: 2,
+      refetchMaxRounds: 0,
+      retry: { maxAttempts: 2, backoffMs: 0 },
+    });
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    let attempts = 0;
+    let result;
+    const output = await captureStderr(async (chunks) => {
+      result = await runFetch({
+        configPath: fixture.configPath,
+        date: '2026-03-23',
+        referenceTime: FIXTURE_REFERENCE_TIME,
+        fetchImpl: async () => {
+          attempts += 1;
+          throw new Error('Request timed out after 5000ms');
+        },
+      });
+      return chunks.join('');
+    });
+
+    assert.equal(attempts, 2);
+    assert.equal(result.parseErrorCount, 1);
+    assert.equal(result.softFailedAccountCount, 2);
+    assert.match(output, /"event":"fetch_batch_start"/);
+    assert.match(output, /"event":"llm_request_failed"/);
+    assert.match(output, /"event":"fetch_batch_failed"/);
+    assert.match(output, /"errorClassification":"timeout"/);
+    assert.match(output, /"retryExhausted":true/);
+
+    const fetchRaw = await readJson(result.fetchRawPath);
+    assert.equal(fetchRaw.batches[0].parseError, 'Request timed out after 5000ms');
+    assert.equal(fetchRaw.batches[0].diagnostics.classification, 'timeout');
+    assert.equal(fetchRaw.batches[0].diagnostics.timeoutMs, 5000);
+    assert.equal(fetchRaw.batches[0].retryDiagnostics.maxAttempts, 2);
+    assert.equal(fetchRaw.batches[0].retryDiagnostics.exhausted, true);
+
+    const fetchResult = await readJson(result.fetchResultPath);
+    assert.equal(fetchResult.accounts[0].status, 'soft_failed');
+    assert.equal(fetchResult.accounts[1].status, 'soft_failed');
+    assert.equal(fetchResult.meta.parseErrorCount, 1);
   } finally {
     await fixture.cleanup();
   }

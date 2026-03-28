@@ -14,6 +14,26 @@ import {
   readJson,
 } from '../support/fixtures.mjs';
 
+async function captureStderr(fn) {
+  const chunks = [];
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk, encoding, callback) => {
+    chunks.push(String(chunk));
+    if (typeof encoding === 'function') encoding();
+    if (typeof callback === 'function') callback();
+    return true;
+  });
+  try {
+    return await fn(chunks);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+}
+
+function extractPromptHandles(prompt) {
+  return [...String(prompt ?? '').matchAll(/"handle"\s*:\s*"([^"]+)"/g)].map((match) => match[1]);
+}
+
 test('runFetch refetches no_tweets_found accounts in a second pass and keeps improved coverage', async () => {
   const fixture = await createMockSkillFixture();
   try {
@@ -47,6 +67,165 @@ test('runFetch refetches no_tweets_found accounts in a second pass and keeps imp
     assert.equal(fetchResult.accounts[0].initialStatus, 'no_tweets_found');
     assert.equal(fetchResult.accounts[0].recoveredByRefetch, true);
     assert.equal(fetchResult.refetch.recoveredAccounts[0].handle, 'alice');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runFetch smoke shows how refetchBatchSize=2 and =3 split the same three-account retry set', async () => {
+  async function runScenario(refetchBatchSize) {
+    const fixture = await createMockSkillFixture();
+    try {
+      const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+      Object.assign(config.fetch.profiles['grok-default'], {
+        batchSize: 3,
+        refetchOnStatuses: ['no_tweets_found'],
+        refetchMaxRounds: 1,
+        refetchBatchSize,
+        refetchConcurrency: 1,
+      });
+      await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+      const seedCsv = [
+        '\uFEFFTweetID,Handle,Name,Bio,CanDM,AccountCreateDate,Location,FollowersCount,FollowingCount,TotalFavouritesByUser,MediaCount,UserPageURL,ProfileBannerURL,ProfileURL,AvatarURL,PostCount,Verified,IsBlueVerified',
+        '"1599634054919245824","alice","Alice Maker","Builds tools","false","2022/12/5 13:17:41","Shanghai","3","156","106","0","https://x.com/alice","","https://example.com/alice","https://cdn.example/alice.png","12","false","false"',
+        '"1439790545048457225","bob","Bob Chen","Just fun","false","2021/9/20 11:16:41","","0","38","5","0","https://x.com/bob","","","https://cdn.example/bob.png","1","false","false"',
+        '"1555555555555555555","charlie","Charlie Ops","Ships infra","false","2020/5/20 11:16:41","","10","12","9","0","https://x.com/charlie","","","https://cdn.example/charlie.png","4","false","false"',
+      ].join('\n');
+      await writeFile(`${fixture.skillRoot}\\seed.csv`, seedCsv, 'utf8');
+
+      let callIndex = 0;
+      const requestBatches = [];
+      const result = await runFetch({
+        configPath: fixture.configPath,
+        date: '2026-03-23',
+        referenceTime: FIXTURE_REFERENCE_TIME,
+        fetchImpl: async (_url, options) => {
+          callIndex += 1;
+          const body = JSON.parse(options?.body ?? '{}');
+          const prompt = String(body.messages?.[0]?.content ?? '');
+          const handles = extractPromptHandles(prompt);
+          requestBatches.push(handles);
+
+          if (callIndex === 1) {
+            return createCompletionFetchSequence(['username,tweet_id,created_at,text,original_url\n'])(null, { body: JSON.stringify(body) });
+          }
+
+          const recoveredCsv = [
+            'username,tweet_id,created_at,text,original_url',
+            ...handles.map((handle, index) => {
+              const tweetId = handle === 'alice'
+                ? '190101'
+                : handle === 'bob'
+                  ? '190102'
+                  : `19010${index + 3}`;
+              return `"${handle}","${tweetId}","2026-03-23T03:00:00Z","${handle} recovered during refetch.","https://x.com/${handle}/status/${tweetId}"`;
+            }),
+          ].join('\n');
+          return createCompletionFetchSequence([recoveredCsv])(null, { body: JSON.stringify(body) });
+        },
+      });
+
+      const fetchRaw = await readJson(result.fetchRawPath);
+      const fetchResult = await readJson(result.fetchResultPath);
+      return {
+        requestBatches,
+        executedBatchCount: fetchResult.meta.executedBatchCount,
+        refetchBatchCount: fetchRaw.batches.filter((batch) => batch.attemptKind === 'refetch').length,
+        recoveredByRefetchCount: fetchResult.meta.recoveredByRefetchCount,
+        accountStatuses: fetchResult.accounts.map((account) => account.status),
+        cleanup: fixture.cleanup,
+      };
+    } catch (error) {
+      await fixture.cleanup();
+      throw error;
+    }
+  }
+
+  const batchSize2 = await runScenario(2);
+  const batchSize3 = await runScenario(3);
+  try {
+    assert.equal(batchSize2.recoveredByRefetchCount, 3);
+    assert.equal(batchSize3.recoveredByRefetchCount, 3);
+    assert.deepEqual(batchSize2.accountStatuses, ['covered', 'covered', 'covered']);
+    assert.deepEqual(batchSize3.accountStatuses, ['covered', 'covered', 'covered']);
+
+    assert.equal(batchSize2.refetchBatchCount, 2);
+    assert.equal(batchSize3.refetchBatchCount, 1);
+    assert.equal(batchSize2.executedBatchCount, 3);
+    assert.equal(batchSize3.executedBatchCount, 2);
+
+    assert.deepEqual(batchSize2.requestBatches[0], ['alice', 'bob', 'charlie']);
+    assert.equal(batchSize2.requestBatches[1].length, 2);
+    assert.equal(batchSize2.requestBatches[2].length, 1);
+    assert.deepEqual(
+      [...batchSize2.requestBatches[1], ...batchSize2.requestBatches[2]].sort(),
+      ['alice', 'bob', 'charlie'],
+    );
+    assert.deepEqual(batchSize3.requestBatches[0], ['alice', 'bob', 'charlie']);
+    assert.equal(batchSize3.requestBatches[1].length, 3);
+    assert.deepEqual(batchSize3.requestBatches[1].slice().sort(), ['alice', 'bob', 'charlie']);
+  } finally {
+    await batchSize2.cleanup();
+    await batchSize3.cleanup();
+  }
+});
+
+test('runFetch preserves refetch timeout diagnostics even when accounts remain no_tweets_found', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    config.defaults.logLevel = 'info';
+    Object.assign(config.fetch.profiles['grok-default'], {
+      batchSize: 2,
+      refetchOnStatuses: ['no_tweets_found'],
+      refetchMaxRounds: 1,
+      refetchBatchSize: 1,
+      refetchConcurrency: 1,
+      retry: { maxAttempts: 2, backoffMs: 0 },
+    });
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const emptyCsv = 'username,tweet_id,created_at,text,original_url\n';
+    let callIndex = 0;
+    let result;
+    const output = await captureStderr(async (chunks) => {
+      result = await runFetch({
+        configPath: fixture.configPath,
+        date: '2026-03-23',
+        referenceTime: FIXTURE_REFERENCE_TIME,
+        fetchImpl: async (_url, options) => {
+          callIndex += 1;
+          if (callIndex === 1) {
+            const body = JSON.parse(options?.body ?? '{}');
+            return createCompletionFetchSequence([emptyCsv])(null, { body: JSON.stringify(body) });
+          }
+          if (callIndex === 2 || callIndex === 3) {
+            throw new Error('Request timed out after 5000ms');
+          }
+          return createCompletionFetchSequence([emptyCsv])(null, options);
+        },
+      });
+      return chunks.join('');
+    });
+
+    assert.equal(result.parseErrorCount, 1);
+    assert.match(output, /"event":"fetch_batch_start"/);
+    assert.match(output, /"attemptKind":"refetch"/);
+    assert.match(output, /"event":"fetch_batch_failed"/);
+    assert.match(output, /"errorClassification":"timeout"/);
+
+    const fetchRaw = await readJson(result.fetchRawPath);
+    const timeoutBatch = fetchRaw.batches.find((batch) => batch.attemptKind === 'refetch' && batch.diagnostics?.classification === 'timeout');
+    assert.ok(timeoutBatch);
+    assert.equal(timeoutBatch.round, 1);
+    assert.equal(timeoutBatch.retryDiagnostics.maxAttempts, 2);
+    assert.equal(timeoutBatch.retryDiagnostics.exhausted, true);
+
+    const fetchResult = await readJson(result.fetchResultPath);
+    assert.equal(fetchResult.meta.stayedSoftFailedAccountCount, 0);
+    assert.equal(fetchResult.meta.stayedNoTweetAccountCount, 2);
+    assert.equal(fetchResult.accounts.filter((account) => account.wasRefetched).length, 2);
   } finally {
     await fixture.cleanup();
   }

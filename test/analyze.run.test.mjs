@@ -21,6 +21,14 @@ import {
   readText,
 } from '../support/fixtures.mjs';
 
+function createDeferred() {
+  let resolve = () => {};
+  const promise = new Promise((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 test('repo analysis profiles keep timeout above the known live-run failure threshold', async () => {
   const repoConfig = await readJson(fileURLToPath(new URL('../config.json', import.meta.url)));
   const exampleConfig = await readJson(fileURLToPath(new URL('../config.example.json', import.meta.url)));
@@ -207,6 +215,166 @@ test('runAnalyze can update roster scores via GPT before writing the daily brief
     assert.equal(analyzeResult.meta.rosterScoring.scoredAccountCount, 1);
     assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
     assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4(xhigh)');
+
+    const scoreState = await readJson(join(fixture.skillRoot, 'account-score.json'));
+    const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
+    assert.equal(alice.score, 4);
+    assert.equal(alice.tier, 'daily');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze overlaps roster scoring with screening before the final brief', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    config.roster = {
+      enabled: true,
+      masterCsvPath: './seed.csv',
+      dailyCsvPath: './daily.csv',
+      scoreFilePath: './account-score.json',
+      scoring: {
+        enabled: true,
+        promptFile: './assets/prompts/gpt-roster-score.txt',
+        batchSize: 10,
+        maxTweetsPerAccount: 3,
+        defaultScore: 2,
+        minScore: 0,
+        maxScore: 5,
+        dailyMinScore: 4,
+        everyOtherDayMinScore: 2,
+        weeklyMinScore: 1,
+        dailyIntervalDays: 1,
+        everyOtherDayIntervalDays: 2,
+        weeklyIntervalDays: 7,
+        coldIntervalDays: 28,
+      },
+    };
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const runDate = '2026-03-23';
+    const fetchRunDir = join(fixture.skillRoot, 'data', runDate, 'run-000001');
+    await mkdir(fetchRunDir, { recursive: true });
+
+    const baseTimeMs = Date.parse('2026-03-23T12:00:00Z');
+    const items = Array.from({ length: 50 }, (_, index) => {
+      const handle = index % 2 === 0 ? 'alice' : 'bob';
+      return {
+        tweetId: `19${String(index + 1).padStart(4, '0')}`,
+        username: handle,
+        displayName: handle === 'alice' ? 'Alice Maker' : 'Bob Chen',
+        createdAt: new Date(baseTimeMs - (index * 60 * 1000)).toISOString(),
+        text: `${handle} shipped an agent workflow update with benchmark notes and docs https://example.com/${handle}/${index + 1}`,
+        originalUrl: `https://x.com/${handle}/status/19${String(index + 1).padStart(4, '0')}`,
+        batchId: 'batch-1',
+        source: { seedId: handle === 'alice' ? 'seed-1' : 'seed-2' },
+      };
+    });
+    const accounts = [
+      {
+        seedId: 'seed-1',
+        handle: 'alice',
+        displayName: 'Alice Maker',
+        userPageUrl: 'https://x.com/alice',
+        status: 'covered',
+        tweetCount: 25,
+        notes: [],
+      },
+      {
+        seedId: 'seed-2',
+        handle: 'bob',
+        displayName: 'Bob Chen',
+        userPageUrl: 'https://x.com/bob',
+        status: 'covered',
+        tweetCount: 25,
+        notes: [],
+      },
+    ];
+    const fetchResult = {
+      meta: {
+        sourceProvider: 'grok',
+        fetchedAt: FIXTURE_REFERENCE_TIME,
+        windowStartUtc: '2026-03-22T14:21:05.770Z',
+        windowEndUtc: FIXTURE_REFERENCE_TIME,
+        sourceCsvPath: join(fixture.skillRoot, 'seed.csv'),
+        timeWindowHours: 24,
+        fetchInputPath: join(fetchRunDir, 'fetch.input.json'),
+        fetchRawPath: join(fetchRunDir, 'fetch.raw.json'),
+        fetchRawCsvPath: join(fetchRunDir, 'fetch.raw.csv'),
+      },
+      accounts,
+      items,
+      warnings: [],
+    };
+    await writeFile(join(fetchRunDir, 'fetch.result.json'), JSON.stringify(fetchResult, null, 2));
+
+    const scoringGate = createDeferred();
+    let scoringRequestSeen = false;
+    let scoringResolved = false;
+    let screeningRequestCount = 0;
+    let overlapObserved = false;
+    const requestKinds = [];
+    const analyzeFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      const prompt = String(body.messages?.[0]?.content ?? '');
+
+      if (prompt.startsWith('Score roster accounts')) {
+        scoringRequestSeen = true;
+        if (screeningRequestCount > 0 && !scoringResolved) overlapObserved = true;
+        requestKinds.push('roster');
+        await scoringGate.promise;
+        scoringResolved = true;
+        return createCompletionResponse(JSON.stringify([
+          {
+            handle: 'alice',
+            high_value_tweet_count: 1,
+            low_value_chat_count: 0,
+            reason: 'Useful tooling updates.',
+          },
+        ]), body);
+      }
+
+      if (prompt.includes('你是一位信息流筛选编辑')) {
+        screeningRequestCount += 1;
+        if (scoringRequestSeen && !scoringResolved) overlapObserved = true;
+        if (screeningRequestCount === 1) scoringGate.resolve();
+        requestKinds.push(`screening-${screeningRequestCount}`);
+        const tweetIds = [...prompt.matchAll(/"tweet_id":\s*"([^"]+)"/g)].map((match) => match[1]);
+        const response = screeningRequestCount === 1
+          ? JSON.stringify([
+            { tweet_id: tweetIds[0], handle: 'alice', priority: 3, reason: 'chunk1 高价值候选。' },
+            { tweet_id: tweetIds[1], handle: 'bob', priority: 2, reason: 'chunk1 补充候选。' },
+          ])
+          : JSON.stringify([
+            { tweet_id: tweetIds[0], handle: 'alice', priority: 3, reason: 'chunk2 高价值候选。' },
+          ]);
+        return createCompletionResponse(response, body);
+      }
+
+      if (prompt.startsWith('Analyze tweets for')) {
+        requestKinds.push('final');
+        return createCompletionResponse(FIXTURE_ANALYZE_MARKDOWN, body);
+      }
+
+      throw new Error(`Unexpected analyze prompt: ${prompt.slice(0, 60)}`);
+    };
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: runDate,
+      fetchImpl: analyzeFetch,
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(overlapObserved, true);
+    assert.equal(screeningRequestCount, 2);
+    assert.equal(requestKinds.at(-1), 'final');
+    assert.ok(requestKinds.includes('roster'));
+    assert.equal(requestKinds.filter((kind) => kind.startsWith('screening-')).length, 2);
+    assert.equal(analyzeResult.meta.screeningChunkCount, 2);
+    assert.equal(analyzeResult.meta.screeningCandidateCount, 3);
+    assert.equal(analyzeResult.meta.rosterScoring.scoredAccountCount, 1);
 
     const scoreState = await readJson(join(fixture.skillRoot, 'account-score.json'));
     const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
@@ -475,6 +643,22 @@ test('runAnalyze screens large signal sets in chunks before generating the final
         { tweet_id: '190049', handle: 'account25', priority: 3, reason: 'chunk2 重点候选。' },
         { tweet_id: '190050', handle: 'account25', priority: 2, reason: 'chunk2 补充候选。' },
       ]),
+      JSON.stringify([
+        {
+          headline: '账号 1-2 的工具与方法论更新',
+          summary: '这一组主要是工具发布和方法论补充，适合进入最终日报。',
+          tweet_ids: ['190001', '190002', '190003', '190004'],
+          handles: ['account01', 'account02'],
+        },
+      ]),
+      JSON.stringify([
+        {
+          headline: '账号 25 的重点更新',
+          summary: '这一组提供了第二个主题线索，适合在成稿中独立呈现。',
+          tweet_ids: ['190049', '190050'],
+          handles: ['account25'],
+        },
+      ]),
       FIXTURE_ANALYZE_MARKDOWN,
     ];
     let responseIndex = 0;
@@ -501,15 +685,20 @@ test('runAnalyze screens large signal sets in chunks before generating the final
     assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
     assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4(xhigh)');
 
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 5);
     assert.equal(requests[0].model, 'gpt-5.4-mini');
     assert.equal(requests[1].model, 'gpt-5.4-mini');
-    assert.equal(requests[2].model, 'gpt-5.4(xhigh)');
+    assert.equal(requests[2].model, 'gpt-5.4-mini');
+    assert.equal(requests[3].model, 'gpt-5.4-mini');
+    assert.equal(requests[4].model, 'gpt-5.4(xhigh)');
     assert.equal(requests[0].stream, false);
     assert.equal(requests[1].stream, false);
-    assert.equal(requests[2].stream, true);
-    const finalPrompt = String(requests[2].messages[0].content ?? '');
+    assert.equal(requests[2].stream, false);
+    assert.equal(requests[3].stream, false);
+    assert.equal(requests[4].stream, true);
+    const finalPrompt = String(requests[4].messages[0].content ?? '');
     assert.ok((finalPrompt.match(/"tweet_id":/g) ?? []).length > 4);
+    assert.match(finalPrompt, /"summary_chunks":/);
   } finally {
     await fixture.cleanup();
   }

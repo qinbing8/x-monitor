@@ -1,13 +1,25 @@
 import { mkdir, readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-export function resolveRunDate(input = new Date()) {
-  if (typeof input === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(input)) return input;
-  const date = input instanceof Date ? input : new Date(input);
+function formatRunDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+export function resolveRunDate(input = new Date()) {
+  if (typeof input === 'string') {
+    const normalized = input.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized;
+    if (normalized.length === 0) return formatRunDate(new Date());
+  }
+
+  const date = input instanceof Date ? input : new Date(input);
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error(`Invalid run date: ${String(input)}`);
+  }
+  return formatRunDate(date);
 }
 
 function generateRunId() {

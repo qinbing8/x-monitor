@@ -151,6 +151,82 @@ test('prepareDailyRoster respects cadence tiers when selecting the next daily ro
   }
 });
 
+test('prepareDailyRoster heals invalid stored selection dates and still shrinks the roster', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    await writeFile(
+      `${fixture.skillRoot}\\account-score.json`,
+      JSON.stringify({
+        meta: {
+          lastPreparedRunDate: 'NaN-NaN-NaN',
+          lastScoredRunDate: '2026-03-23',
+        },
+        accounts: [
+          {
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+            postCount: 12,
+            score: 4,
+            tier: 'daily',
+            lastEvaluatedAt: '2026-03-23T00:00:00Z',
+            lastSelectedAt: 'NaN-NaN-NaN',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 2,
+            lowValueChatCount: 0,
+            evaluationCount: 2,
+            selectionCount: 2,
+            reasoning: 'Useful tool updates.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1439790545048457225',
+            handle: 'bob',
+            displayName: 'Bob Chen',
+            userPageUrl: 'https://x.com/bob',
+            postCount: 0,
+            score: 0,
+            tier: 'cold',
+            lastEvaluatedAt: '2026-03-23T00:00:00Z',
+            lastSelectedAt: 'NaN-NaN-NaN',
+            lastFetchStatus: 'no_tweets_found',
+            highValueHitCount: 0,
+            lowValueChatCount: 3,
+            evaluationCount: 2,
+            selectionCount: 2,
+            reasoning: 'Mostly casual chatter.',
+            unseen: false,
+          },
+        ],
+      }, null, 2),
+    );
+
+    const summary = await prepareDailyRoster({
+      configPath: fixture.configPath,
+      date: '2026-03-24',
+    });
+
+    assert.equal(summary.dailyCount, 1);
+
+    const dailyCsv = await readText(summary.dailyCsvPath);
+    assert.match(dailyCsv, /alice/);
+    assert.doesNotMatch(dailyCsv, /bob/);
+
+    const scoreState = await readJson(summary.scoreFilePath);
+    const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
+    const bob = scoreState.accounts.find((entry) => entry.handle === 'bob');
+    assert.equal(scoreState.meta.lastPreparedRunDate, '2026-03-24');
+    assert.equal(alice.lastSelectedAt, '2026-03-24');
+    assert.equal(bob.lastSelectedAt, '2026-03-23');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runRosterScoring updates account scores from GPT decisions without changing Grok fetch behavior', async () => {
   const fixture = await createMockSkillFixture();
   try {
