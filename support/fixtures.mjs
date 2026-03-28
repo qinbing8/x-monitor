@@ -8,16 +8,19 @@ export const FIXTURE_OPENCLAW = {
       'router-gpt': {
         baseUrl: 'https://gpt.example/v1',
         apiKey: 'gpt-key',
+        api: 'openai-responses',
         models: [{ id: 'gpt-5.4(xhigh)' }],
       },
       'router-gpt-backup': {
         baseUrl: 'https://gpt-backup.example/v1',
         apiKey: 'gpt-backup-key',
+        api: 'openai-completions',
         models: [{ id: 'gpt-5.4-mini' }, { id: 'gpt-5.4' }],
       },
       anyrouter: {
         baseUrl: 'https://claude.example/v1',
         apiKey: 'claude-key',
+        api: 'anthropic-messages',
         models: [{ id: 'claude-sonnet-4-6' }],
       },
     },
@@ -213,15 +216,15 @@ export async function createMockSkillFixture() {
       },
       gpt: {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt' },
-        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', models: 'models' },
+        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
       },
       'gpt-backup': {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt-backup' },
-        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', models: 'models' },
+        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
       },
       claude: {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.anyrouter' },
-        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', models: 'models' },
+        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
       },
     },
     models: {
@@ -294,6 +297,20 @@ function normalizeCompletionItem(item) {
   };
 }
 
+function normalizeUsage(item, mode) {
+  if (!item?.usage) return null;
+  if (mode === 'responses') {
+    return {
+      input_tokens: item.usage.input_tokens ?? item.usage.prompt_tokens ?? null,
+      output_tokens: item.usage.output_tokens ?? item.usage.completion_tokens ?? null,
+    };
+  }
+  return {
+    prompt_tokens: item.usage.prompt_tokens ?? item.usage.input_tokens ?? null,
+    completion_tokens: item.usage.completion_tokens ?? item.usage.output_tokens ?? null,
+  };
+}
+
 function createStreamingCompletionResponse(item) {
   const encoder = new TextEncoder();
   const normalized = normalizeCompletionItem(item);
@@ -317,14 +334,85 @@ function createStreamingCompletionResponse(item) {
   };
 }
 
+function createStreamingResponsesResponse(item) {
+  const encoder = new TextEncoder();
+  const normalized = normalizeCompletionItem(item);
+  const status = normalized.finishReason === 'length' ? 'incomplete' : 'completed';
+  const response = {
+    object: 'response',
+    status,
+    output_text: normalized.content,
+    output: [{
+      type: 'message',
+      role: 'assistant',
+      status,
+      content: [{
+        type: 'output_text',
+        text: normalized.content,
+        annotations: [],
+      }],
+    }],
+    usage: normalizeUsage(normalized, 'responses'),
+  };
+  if (status === 'incomplete') {
+    response.incomplete_details = { reason: 'max_output_tokens' };
+  }
+  return {
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'response.output_text.delta', delta: normalized.content })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'response.done', response })}\n\n`));
+        controller.close();
+      },
+    }),
+  };
+}
+
+function createResponsesResponse(item) {
+  const normalized = normalizeCompletionItem(item);
+  const status = normalized.finishReason === 'length' ? 'incomplete' : 'completed';
+  const payload = {
+    object: 'response',
+    status,
+    output_text: normalized.content,
+    output: [{
+      type: 'message',
+      role: 'assistant',
+      status,
+      content: [{
+        type: 'output_text',
+        text: normalized.content,
+        annotations: [],
+      }],
+    }],
+    usage: normalizeUsage(normalized, 'responses'),
+  };
+  if (status === 'incomplete') {
+    payload.incomplete_details = { reason: 'max_output_tokens' };
+  }
+  return {
+    ok: true,
+    status: 200,
+    json: async () => payload,
+  };
+}
+
 export function createCompletionResponse(item, requestBody = {}) {
   const normalized = normalizeCompletionItem(item);
+  const usesResponsesApi = Array.isArray(requestBody?.input) || Object.hasOwn(requestBody ?? {}, 'max_output_tokens');
+  if (usesResponsesApi) {
+    return requestBody?.stream
+      ? createStreamingResponsesResponse(normalized)
+      : createResponsesResponse(normalized);
+  }
   if (requestBody?.stream) return createStreamingCompletionResponse(normalized);
 
   const payload = {
     choices: [{ message: { content: normalized.content }, finish_reason: normalized.finishReason }],
   };
-  if (normalized.usage) payload.usage = normalized.usage;
+  if (normalized.usage) payload.usage = normalizeUsage(normalized, 'chat');
   return {
     ok: true,
     status: 200,

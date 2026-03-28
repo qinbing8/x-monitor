@@ -317,7 +317,7 @@ test('runAnalyze overlaps roster scoring with screening before the final brief',
     const requestKinds = [];
     const analyzeFetch = async (_url, options) => {
       const body = JSON.parse(options.body);
-      const prompt = String(body.messages?.[0]?.content ?? '');
+      const prompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
 
       if (prompt.startsWith('Score roster accounts')) {
         scoringRequestSeen = true;
@@ -455,7 +455,7 @@ test('runAnalyze writes a final-draft diagnostic artifact when the brief request
     assert.equal(analyzeError.error.classification, 'network_error');
     assert.equal(analyzeError.error.code, 'ECONNRESET');
     assert.equal(analyzeError.error.operationName, 'analyze_round:0');
-    assert.match(analyzeError.error.targetPath, /\/chat\/completions$/);
+    assert.match(analyzeError.error.targetPath, /\/responses$/);
     assert.equal(analyzeError.error.retry.maxAttempts, 1);
     assert.equal(analyzeError.error.retry.exhausted, true);
     assert.equal(analyzeError.error.continuation.failedRound, 0);
@@ -696,7 +696,7 @@ test('runAnalyze screens large signal sets in chunks before generating the final
     assert.equal(requests[2].stream, false);
     assert.equal(requests[3].stream, false);
     assert.equal(requests[4].stream, true);
-    const finalPrompt = String(requests[4].messages[0].content ?? '');
+    const finalPrompt = String(requests[4].messages?.[0]?.content ?? requests[4].input?.[0]?.content ?? '');
     assert.ok((finalPrompt.match(/"tweet_id":/g) ?? []).length > 4);
     assert.match(finalPrompt, /"summary_chunks":/);
   } finally {

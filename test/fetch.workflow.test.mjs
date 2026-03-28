@@ -103,7 +103,7 @@ test('runFetch smoke shows how refetchBatchSize=2 and =3 split the same three-ac
         fetchImpl: async (_url, options) => {
           callIndex += 1;
           const body = JSON.parse(options?.body ?? '{}');
-          const prompt = String(body.messages?.[0]?.content ?? '');
+          const prompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
           const handles = extractPromptHandles(prompt);
           requestBatches.push(handles);
 

@@ -339,6 +339,7 @@ async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems,
         () => postChatCompletions({
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
+          apiProtocol: profile.provider.api ?? profile.apiProtocol,
           model: profile.modelId,
           timeoutMs,
           temperature: 0,
@@ -569,6 +570,7 @@ async function screenSignalTweetsWithModel({ runDate, signalItems, profile, fetc
         () => postChatCompletions({
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
+          apiProtocol: profile.provider.api ?? profile.apiProtocol,
           model: profile.modelId,
           timeoutMs,
           temperature: 0,
@@ -1311,6 +1313,7 @@ export async function runAnalysisWithContinuation({ profile, messages, fetchImpl
         () => postChatCompletions({
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
+          apiProtocol: profile.provider.api ?? profile.apiProtocol,
           model: profile.modelId,
           timeoutMs,
           temperature: profile.temperature,

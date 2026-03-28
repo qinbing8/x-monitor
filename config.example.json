@@ -72,6 +72,8 @@
       "gpt-default": {
         "providerRef": "gpt",
         "modelRef": "gpt-main",
+        "rosterModelRef": "gpt-main-mini",
+        "screeningModelRef": "gpt-main-mini",
         "apiProtocol": "openai-compatible",
         "timeoutMs": 180000,
         "retry": {
@@ -123,6 +125,20 @@
       "mapping": {
         "baseUrl": "baseUrl",
         "apiKey": "apiKey",
+        "api": "api",
+        "models": "models"
+      }
+    },
+    "gpt-backup": {
+      "role": "analysis",
+      "configSource": {
+        "fileRef": "openclaw",
+        "jsonPath": "$.models.providers.router-gpt-backup"
+      },
+      "mapping": {
+        "baseUrl": "baseUrl",
+        "apiKey": "apiKey",
+        "api": "api",
         "models": "models"
       }
     },
@@ -135,6 +151,7 @@
       "mapping": {
         "baseUrl": "baseUrl",
         "apiKey": "apiKey",
+        "api": "api",
         "models": "models"
       }
     }
@@ -143,6 +160,10 @@
     "gpt-main": {
       "providerRef": "gpt",
       "modelId": "gpt-5.4(xhigh)"
+    },
+    "gpt-main-mini": {
+      "providerRef": "gpt-backup",
+      "modelId": "gpt-5.4-mini"
     },
     "claude-main": {
       "providerRef": "claude",

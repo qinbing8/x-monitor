@@ -773,6 +773,7 @@ async function runSeedBatch({
       () => postChatCompletions({
         baseUrl: profile.provider.baseUrl,
         apiKey: profile.provider.apiKey,
+        apiProtocol: profile.provider.api ?? profile.apiProtocol,
         model: profile.model,
         timeoutMs: profile.timeoutMs,
         temperature: 0,
@@ -1245,6 +1246,7 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
         () => postChatCompletions({
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
+          apiProtocol: profile.provider.api ?? profile.apiProtocol,
           model: profile.model,
           timeoutMs,
           temperature: 0,

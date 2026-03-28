@@ -8,6 +8,8 @@ import {
   injectQualityBanner,
   buildTweetEvidenceBlock,
   compactTweetText,
+  parseCandidateScreeningResponse,
+  mergeCandidateScreeningDecisions,
   selectDigestEvidenceItems,
 } from '../scripts/analyze.mjs';
 
@@ -76,7 +78,8 @@ test('buildTweetEvidenceBlock formats tweet items and coverage into the analysis
     warnings: [],
   });
   assert.match(block, /"tweet_id": "190001"/);
-  assert.match(block, /"status": "no_tweets_found"/);
+  assert.match(block, /"no_tweet_handles": \[/);
+  assert.match(block, /"bob"/);
 });
 
 test('selectDigestEvidenceItems caps prompt evidence by account and total count', () => {
@@ -95,6 +98,93 @@ test('selectDigestEvidenceItems caps prompt evidence by account and total count'
 
   assert.equal(selected.length, 4);
   assert.equal(selected.filter((item) => item.username === 'alice').length, 2);
+});
+
+test('parseCandidateScreeningResponse extracts structured candidates from JSON output', () => {
+  const parsed = parseCandidateScreeningResponse([
+    '```json',
+    '[',
+    '  {"tweet_id":"190001","handle":"alice","priority":3,"reason":"工具发布，信息密度高"},',
+    '  {"tweet_id":"190002","handle":"bob","priority":2,"reason":"方法论总结"}',
+    ']',
+    '```',
+  ].join('\n'));
+
+  assert.deepEqual(parsed, [
+    {
+      tweetId: '190001',
+      handle: 'alice',
+      priority: 3,
+      reason: '工具发布，信息密度高',
+    },
+    {
+      tweetId: '190002',
+      handle: 'bob',
+      priority: 2,
+      reason: '方法论总结',
+    },
+  ]);
+});
+
+test('mergeCandidateScreeningDecisions dedupes by tweet and applies per-account caps', () => {
+  const signalItems = [
+    { tweetId: '1', username: 'alice', createdAt: '2026-03-23T09:00:00Z', text: 'Release notes with benchmark results and GitHub link https://github.com/example/repo' },
+    { tweetId: '2', username: 'alice', createdAt: '2026-03-23T08:00:00Z', text: 'Another launch update with docs https://example.com/docs' },
+    { tweetId: '3', username: 'alice', createdAt: '2026-03-23T07:00:00Z', text: 'Third alice update with docs https://example.com/third' },
+    { tweetId: '4', username: 'bob', createdAt: '2026-03-23T06:00:00Z', text: 'Paper summary with 3 concrete takeaways and demo link https://example.com/paper' },
+    { tweetId: '5', username: 'carol', createdAt: '2026-03-23T05:00:00Z', text: 'Dataset release and benchmark notes https://example.com/dataset' },
+  ];
+  const decisions = [
+    { tweetId: '1', handle: 'alice', priority: 3, reason: 'High-value release.' },
+    { tweetId: '1', handle: 'alice', priority: 2, reason: 'Duplicate lower score.' },
+    { tweetId: '2', handle: 'alice', priority: 2, reason: 'Useful docs.' },
+    { tweetId: '3', handle: 'alice', priority: 1, reason: 'Should be capped out.' },
+    { tweetId: '4', handle: 'bob', priority: 2, reason: 'Worth tracking.' },
+    { tweetId: '5', handle: 'carol', priority: 0, reason: 'Should be filtered out.' },
+  ];
+
+  const merged = mergeCandidateScreeningDecisions(signalItems, decisions, {
+    maxTotalItems: 3,
+    maxItemsPerAccount: 2,
+  });
+
+  assert.equal(merged.length, 3);
+  assert.equal(merged.filter((item) => item.username === 'alice').length, 2);
+  assert.deepEqual(new Set(merged.map((item) => item.tweetId)), new Set(['1', '2', '4']));
+});
+
+test('mergeCandidateScreeningDecisions enforces a hard cap of 3 and a soft cap of 4 for priority-3 items', () => {
+  const signalItems = [
+    { tweetId: '1', username: 'alice', createdAt: '2026-03-23T09:00:00Z', text: 'Release 1 with docs https://example.com/1' },
+    { tweetId: '2', username: 'alice', createdAt: '2026-03-23T08:00:00Z', text: 'Release 2 with docs https://example.com/2' },
+    { tweetId: '3', username: 'alice', createdAt: '2026-03-23T07:00:00Z', text: 'Release 3 with docs https://example.com/3' },
+    { tweetId: '4', username: 'alice', createdAt: '2026-03-23T06:00:00Z', text: 'Release 4 with docs https://example.com/4' },
+    { tweetId: '5', username: 'alice', createdAt: '2026-03-23T05:00:00Z', text: 'Release 5 with docs https://example.com/5' },
+    { tweetId: '6', username: 'alice', createdAt: '2026-03-23T04:00:00Z', text: 'Release 6 with docs https://example.com/6' },
+  ];
+
+  const mergedWithLowPriorityFourth = mergeCandidateScreeningDecisions(signalItems, [
+    { tweetId: '1', handle: 'alice', priority: 3, reason: 'Top candidate.' },
+    { tweetId: '2', handle: 'alice', priority: 2, reason: 'Second candidate.' },
+    { tweetId: '3', handle: 'alice', priority: 2, reason: 'Third candidate.' },
+    { tweetId: '4', handle: 'alice', priority: 2, reason: 'Should be blocked at hard cap.' },
+  ], {
+    maxTotalItems: 10,
+  });
+  assert.deepEqual(mergedWithLowPriorityFourth.map((item) => item.tweetId), ['1', '2', '3']);
+
+  const mergedWithHighPriorityFourth = mergeCandidateScreeningDecisions(signalItems, [
+    { tweetId: '1', handle: 'alice', priority: 3, reason: 'Top candidate.' },
+    { tweetId: '2', handle: 'alice', priority: 2, reason: 'Second candidate.' },
+    { tweetId: '3', handle: 'alice', priority: 2, reason: 'Third candidate.' },
+    { tweetId: '4', handle: 'alice', priority: 3, reason: 'High-priority item under the hard cap.' },
+    { tweetId: '5', handle: 'alice', priority: 3, reason: 'High-priority item under the hard cap.' },
+    { tweetId: '6', handle: 'alice', priority: 3, reason: 'Allowed as the soft-cap exception.' },
+  ], {
+    maxTotalItems: 10,
+  });
+  assert.equal(mergedWithHighPriorityFourth.length, 4);
+  assert.deepEqual(mergedWithHighPriorityFourth.map((item) => item.tweetId), ['1', '4', '5', '6']);
 });
 
 test('compactTweetText and buildTweetEvidenceBlock keep prompt tweet text bounded', () => {

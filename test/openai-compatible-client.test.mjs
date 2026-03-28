@@ -54,6 +54,49 @@ test('postChatCompletions returns text and diagnostics from successful responses
   assert.equal(completion.diagnostics.completionTokens, 7);
 });
 
+test('postChatCompletions routes openai-responses requests to /responses and extracts output text', async () => {
+  let requestUrl = null;
+  let requestBody = null;
+  const completion = await postChatCompletions({
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'test-key',
+    apiProtocol: 'openai-responses',
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: 'hello' }],
+    timeoutMs: 5000,
+    temperature: 0,
+    maxTokens: 32,
+    fetchImpl: async (url, options) => {
+      requestUrl = url;
+      requestBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          object: 'response',
+          status: 'completed',
+          output_text: 'world',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'world', annotations: [] }],
+          }],
+          usage: { input_tokens: 12, output_tokens: 7 },
+        }),
+      };
+    },
+  });
+
+  assert.equal(requestUrl, 'https://example.com/v1/responses');
+  assert.deepEqual(requestBody.input, [{ role: 'user', content: 'hello' }]);
+  assert.equal(requestBody.max_output_tokens, 32);
+  assert.equal(completion.text, 'world');
+  assert.equal(completion.diagnostics.finishReason, 'stop');
+  assert.equal(completion.diagnostics.promptTokens, 12);
+  assert.equal(completion.diagnostics.completionTokens, 7);
+});
+
 test('postChatCompletions surfaces HTTP failures with status metadata', async () => {
   await assert.rejects(
     postChatCompletions({
@@ -96,6 +139,39 @@ test('postChatCompletions can consume streaming chat completion responses', asyn
     },
   });
 
+  assert.equal(requestedStream, true);
+  assert.equal(completion.text, 'world');
+  assert.equal(completion.diagnostics.finishReason, 'stop');
+  assert.equal(completion.diagnostics.promptTokens, 9);
+  assert.equal(completion.diagnostics.completionTokens, 4);
+});
+
+test('postChatCompletions can consume streaming responses API responses', async () => {
+  let requestUrl = null;
+  let requestedStream = null;
+  const completion = await postChatCompletions({
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'test-key',
+    apiProtocol: 'openai-responses',
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: 'hello' }],
+    timeoutMs: 5000,
+    temperature: 0,
+    maxTokens: 32,
+    stream: true,
+    fetchImpl: async (url, options) => {
+      requestUrl = url;
+      const body = JSON.parse(options.body);
+      requestedStream = body.stream;
+      return createCompletionResponse({
+        content: 'world',
+        finishReason: 'stop',
+        usage: { input_tokens: 9, output_tokens: 4 },
+      }, body);
+    },
+  });
+
+  assert.equal(requestUrl, 'https://example.com/v1/responses');
   assert.equal(requestedStream, true);
   assert.equal(completion.text, 'world');
   assert.equal(completion.diagnostics.finishReason, 'stop');

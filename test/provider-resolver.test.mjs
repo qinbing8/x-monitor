@@ -35,10 +35,12 @@ test('provider resolution switches analysis profile between gpt and claude', asy
     const gptProfile = resolveAnalysisProfile(config, sourceDocs, 'gpt-default');
     assert.equal(gptProfile.modelId, 'gpt-5.4(xhigh)');
     assert.equal(gptProfile.provider.baseUrl, FIXTURE_OPENCLAW.models.providers['router-gpt'].baseUrl);
+    assert.equal(gptProfile.provider.api, 'openai-responses');
 
     const claudeProfile = resolveAnalysisProfile(config, sourceDocs, 'claude-default');
     assert.equal(claudeProfile.modelId, 'claude-sonnet-4-6');
     assert.equal(claudeProfile.provider.baseUrl, FIXTURE_OPENCLAW.models.providers.anyrouter.baseUrl);
+    assert.equal(claudeProfile.provider.api, 'anthropic-messages');
   } finally {
     await fixture.cleanup();
   }
