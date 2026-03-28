@@ -4,11 +4,13 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runFetch, parseCsv } from '../scripts/fetch.mjs';
-import { runAnalyze } from '../scripts/analyze.mjs';
+import { parseCsv } from '../scripts/fetch.mjs';
+import { main } from '../scripts/run.mjs';
 
 const RUN_LIVE = process.env.X_MONITOR_RUN_LIVE === '1';
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+const TEN_MINUTES_MS = 10 * 60 * 1000;
+const TWENTY_MINUTES_MS = 20 * 60 * 1000;
 const LIVE_TIMEOUT_MS = 45 * 60 * 1000;
 
 function normalizeHandle(value, fallbackUrl = '') {
@@ -30,6 +32,22 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
 }
 
+function assertDurationWithin(actualMs, limitMs, label) {
+  assert.ok(
+    Number.isFinite(actualMs) && actualMs < limitMs,
+    `${label} took ${actualMs}ms, expected < ${limitMs}ms`,
+  );
+}
+
+function collectHandleSet(records) {
+  return new Set(
+    records
+      .map((record) => normalizeHandle(record.Handle ?? record.handle, record.UserPageURL ?? record.userPageUrl))
+      .filter(Boolean)
+      .map((handle) => handle.toLowerCase()),
+  );
+}
+
 async function writeLiveDiagnostic(payload) {
   const logDir = fileURLToPath(new URL('../data/live-acceptance', import.meta.url));
   await mkdir(logDir, { recursive: true });
@@ -44,30 +62,48 @@ async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, at
     ? (isAbsolute(process.env.X_MONITOR_LIVE_SEED_CSV)
       ? process.env.X_MONITOR_LIVE_SEED_CSV
       : resolve(fileURLToPath(new URL('..', import.meta.url)), process.env.X_MONITOR_LIVE_SEED_CSV))
-    : fileURLToPath(new URL('../X列表关注者.daily.csv', import.meta.url));
+    : fileURLToPath(new URL('../X列表关注者.csv', import.meta.url));
+  const summary = await main([
+    '--mode', 'run',
+    '--config', configPath,
+    '--date', runDate,
+    '--reference-time', referenceTime,
+    '--seed-csv', seedCsvPath,
+  ]);
+  const fetchSummary = summary.fetch;
+  const analyzeSummary = summary.analyze;
   const seedRecords = parseCsv(await readFile(seedCsvPath, 'utf8'));
-  const requestedHandles = new Set(
-    seedRecords
-      .map((record) => normalizeHandle(record.Handle, record.UserPageURL))
-      .filter(Boolean)
-      .map((handle) => handle.toLowerCase()),
-  );
-
-  const fetchSummary = await runFetch({
-    configPath,
-    date: runDate,
-    seedCsvPath,
-    referenceTime,
-  });
+  const requestedHandles = collectHandleSet(seedRecords);
   const fetchResult = await readJson(fetchSummary.fetchResultPath);
   const tweetIndexRows = parseCsv(await readFile(fetchSummary.fetchTweetIndexCsvPath, 'utf8'));
+  const accountedHandles = new Set(
+    (Array.isArray(fetchResult.accounts) ? fetchResult.accounts : [])
+      .map((account) => String(account.handle ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const accountedCount = (
+    Number(fetchResult.meta.coveredAccountCount ?? 0)
+    + Number(fetchResult.meta.noTweetAccountCount ?? 0)
+    + Number(fetchResult.meta.failedAccountCount ?? 0)
+    + Number(fetchResult.meta.softFailedAccountCount ?? 0)
+    + Number(fetchResult.meta.dormantSkippedAccountCount ?? 0)
+    + Number(fetchResult.meta.incompleteAccountCount ?? 0)
+  );
 
   assert.equal(fetchResult.meta.sourceProvider, 'grok');
   assert.equal(fetchResult.meta.sourceCsvPath, seedCsvPath);
   assert.equal(fetchResult.meta.windowEndUtc, referenceTime);
-  assert.ok(fetchSummary.durationMs < FIFTEEN_MINUTES_MS, `Fetch took ${fetchSummary.durationMs}ms, expected < ${FIFTEEN_MINUTES_MS}ms`);
+  assert.equal(fetchSummary.seedCount, requestedHandles.size);
+  assert.equal(fetchSummary.accountCount, requestedHandles.size);
+  assert.equal(fetchResult.accounts.length, requestedHandles.size);
+  assert.equal(accountedHandles.size, requestedHandles.size);
+  assert.equal(accountedCount, requestedHandles.size);
+  assertDurationWithin(fetchSummary.durationMs, FIFTEEN_MINUTES_MS, 'Fetch');
   assert.ok(fetchResult.items.length > 0, 'Grok did not return any in-window tweet items for the daily roster');
   assert.equal(tweetIndexRows.length, fetchResult.items.length);
+  for (const handle of requestedHandles) {
+    assert.ok(accountedHandles.has(handle), `Daily roster handle @${handle} is missing from fetch account coverage`);
+  }
 
   const windowStartMs = Date.parse(fetchResult.meta.windowStartUtc);
   const windowEndMs = Date.parse(fetchResult.meta.windowEndUtc);
@@ -79,23 +115,25 @@ async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, at
     assert.ok(createdAtMs <= windowEndMs, `Fetched tweet ${item.tweetId} is newer than the acceptance reference time`);
   }
 
-  const analyzeSummary = await runAnalyze({
-    configPath,
-    date: runDate,
-  });
   const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+  const finalMarkdown = String(await readFile(analyzeSummary.finalReportPath, 'utf8')).trim();
   const markdown = String(analyzeResult.answer?.markdown ?? '').trim();
 
   assert.equal(analyzeResult.meta.provider, 'gpt');
+  assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
+  assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
   assert.equal(analyzeResult.answer?.source, 'model', `GPT did not generate the daily brief. Fetch diagnosis: ${analyzeResult.meta.fetchDiagnosis?.note ?? 'unknown'}`);
   assert.ok(markdown.length > 0, 'GPT daily brief is empty');
+  assert.ok(finalMarkdown.length > 0, 'final.md is empty');
+  assertDurationWithin(analyzeResult.meta.finalDraftDurationMs, TEN_MINUTES_MS, 'Final draft generation');
+  assertDurationWithin(analyzeResult.meta.analyzeDurationMs, TWENTY_MINUTES_MS, 'Analyze');
 
   return {
     attempt,
     runDate,
     referenceTime,
     seedCsvPath,
-    dailyCount: requestedHandles.size,
+    seedCount: requestedHandles.size,
     fetch: {
       runDir: fetchSummary.runDir,
       durationMs: fetchSummary.durationMs,
@@ -107,8 +145,14 @@ async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, at
     },
     analyze: {
       runDir: analyzeSummary.runDir,
+      rosterModel: analyzeResult.meta.rosterModel,
+      screeningModel: analyzeResult.meta.screeningModel,
+      briefModel: analyzeResult.meta.briefModel,
+      finalDraftDurationMs: analyzeResult.meta.finalDraftDurationMs,
+      analyzeDurationMs: analyzeResult.meta.analyzeDurationMs,
       answerSource: analyzeResult.answer?.source,
       markdownLength: markdown.length,
+      finalReportLength: finalMarkdown.length,
       fetchDiagnosis: analyzeResult.meta.fetchDiagnosis,
       quality: analyzeResult.quality,
     },

@@ -80,9 +80,13 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.meta.tweetCount, 2);
     assert.equal(analyzeResult.meta.coverage.failedAccountCount, 0);
     assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
+    assert.ok(analyzeResult.meta.finalDraftDurationMs >= 0);
+    assert.ok(analyzeResult.meta.analyzeDurationMs >= analyzeResult.meta.finalDraftDurationMs);
     assert.equal(analyzeResult.answer.source, 'model');
     assert.equal(analyzeResult.answer.markdown, FIXTURE_ANALYZE_MARKDOWN);
     assert.equal(analyzeResult.quality.needsReview, false);
+    assert.equal(analyzeSummary.finalDraftDurationMs, analyzeResult.meta.finalDraftDurationMs);
+    assert.equal(analyzeSummary.analyzeDurationMs, analyzeResult.meta.analyzeDurationMs);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
     assert.equal(finalReport, FIXTURE_ANALYZE_MARKDOWN);

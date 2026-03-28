@@ -1010,6 +1010,7 @@ async function finalizeAnalyzeRun({
       signalTweetCount: signalItems.length,
     });
   }
+  const analyzeDurationMs = Date.now() - startedAt;
   const analyzeResult = {
     meta: {
       analysisProfile: profile.name,
@@ -1036,6 +1037,8 @@ async function finalizeAnalyzeRun({
       summaryItemCount: chunkSummaries.length,
       continuationRounds: continuationResult.continuationRounds,
       truncated: continuationResult.truncated,
+      finalDraftDurationMs: continuationResult.durationMs,
+      analyzeDurationMs,
       coverage,
       fetchDiagnosis,
       rosterScoring,
@@ -1059,7 +1062,8 @@ async function finalizeAnalyzeRun({
     screeningChunkCount: digestSelection.screeningChunkCount,
     continuationRounds: continuationResult.continuationRounds,
     truncated: continuationResult.truncated,
-    durationMs: Date.now() - startedAt,
+    finalDraftDurationMs: continuationResult.durationMs,
+    durationMs: analyzeDurationMs,
   });
   return {
     runDir,
@@ -1069,6 +1073,8 @@ async function finalizeAnalyzeRun({
     analysisProfile: profile.name,
     tweetCount: items.length,
     rosterScoring,
+    finalDraftDurationMs: continuationResult.durationMs,
+    analyzeDurationMs,
   };
 }
 
