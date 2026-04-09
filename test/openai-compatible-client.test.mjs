@@ -28,6 +28,34 @@ test('withRetry throws the last error after exhausting attempts', async () => {
   assert.equal(attempts, 2);
 });
 
+test('withRetry honors retryAfterMs from upstream rate limits', async () => {
+  const originalSetTimeout = global.setTimeout;
+  const scheduledDelays = [];
+  global.setTimeout = ((handler, delay, ...args) => {
+    scheduledDelays.push(delay);
+    return originalSetTimeout(handler, 0, ...args);
+  });
+
+  let attempts = 0;
+  try {
+    const result = await withRetry(async () => {
+      attempts += 1;
+      if (attempts < 2) {
+        const error = new Error('HTTP 429: rate limit');
+        error.retryAfterMs = 12000;
+        throw error;
+      }
+      return 'ok';
+    }, { maxAttempts: 2, backoffMs: 1500 });
+
+    assert.equal(result, 'ok');
+    assert.equal(attempts, 2);
+    assert.deepEqual(scheduledDelays, [12000]);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
 test('postChatCompletions returns text and diagnostics from successful responses', async () => {
   const completion = await postChatCompletions({
     baseUrl: 'https://example.com/v1',

@@ -111,6 +111,24 @@ jobs:
           config.analysis.profiles['gpt-default'].modelRef = 'gpt-brief';
           config.analysis.profiles['gpt-default'].screeningModelRef = 'gpt-screening';
           config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-roster';
+          const fetchProfile = config.fetch?.profiles?.['grok-default'];
+          if (fetchProfile) {
+            // Use conservative live settings in GitHub Actions to avoid provider-side rate limiting.
+            fetchProfile.concurrency = 1;
+            fetchProfile.retry = {
+              ...(fetchProfile.retry ?? {}),
+              maxAttempts: Math.max(4, Number(fetchProfile.retry?.maxAttempts ?? 0) || 0),
+              backoffMs: Math.max(15000, Number(fetchProfile.retry?.backoffMs ?? 0) || 0),
+            };
+            fetchProfile.refetchMaxRounds = 1;
+            fetchProfile.refetchConcurrency = 1;
+            if (fetchProfile.precheck && typeof fetchProfile.precheck === 'object') {
+              fetchProfile.precheck = {
+                ...fetchProfile.precheck,
+                concurrency: 1,
+              };
+            }
+          }
           writeFileSync('config.github-actions.generated.json', JSON.stringify(config, null, 2));
           EOF
 

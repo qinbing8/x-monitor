@@ -37,6 +37,33 @@ function collectErrorCauseChain(error) {
 
 const OPENAI_RESPONSES_API = 'openai-responses';
 
+function getHeaderValue(headers, headerName) {
+  if (!headers || !headerName) return null;
+  if (typeof headers.get === 'function') {
+    const value = headers.get(headerName);
+    return value === null ? null : value;
+  }
+  const expected = String(headerName).trim().toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (String(key).trim().toLowerCase() === expected) return value;
+  }
+  return null;
+}
+
+function parseRetryAfterMs(headers) {
+  const rawValue = String(getHeaderValue(headers, 'retry-after') ?? '').trim();
+  if (!rawValue) return null;
+
+  if (/^\d+(?:\.\d+)?$/.test(rawValue)) {
+    const seconds = Number(rawValue);
+    return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : null;
+  }
+
+  const retryAtMs = Date.parse(rawValue);
+  if (!Number.isFinite(retryAtMs)) return null;
+  return Math.max(0, retryAtMs - Date.now());
+}
+
 function normalizeApiProtocol(apiProtocol) {
   return String(apiProtocol ?? '').trim().toLowerCase() === OPENAI_RESPONSES_API
     ? OPENAI_RESPONSES_API
@@ -297,20 +324,27 @@ export async function withRetry(task, retry = {}, options = {}) {
       return await task(attempt);
     } catch (error) {
       lastError = error;
+      const retryAfterMs = Number(error?.retryAfterMs);
+      const retryDelayMs = attempt >= maxAttempts
+        ? 0
+        : Math.max(
+          backoffMs * attempt,
+          Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : 0,
+        );
       try {
         error.retryDiagnostics = {
           operationName,
           attempt,
           maxAttempts,
-          retryDelayMs: attempt >= maxAttempts ? 0 : backoffMs * attempt,
+          retryDelayMs,
           exhausted: attempt >= maxAttempts,
           backoffMs,
+          retryAfterMs: Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : null,
         };
       } catch {
         // Ignore non-extensible error objects.
       }
       if (attempt >= maxAttempts) break;
-      const retryDelayMs = backoffMs * attempt;
       logger?.warn('retry_attempt_failed', {
         operationName,
         attempt,
@@ -320,6 +354,7 @@ export async function withRetry(task, retry = {}, options = {}) {
         errorClassification: error?.llmRequestDiagnostics?.classification ?? null,
         httpStatus: error?.llmRequestDiagnostics?.httpStatus ?? null,
         errorCode: error?.llmRequestDiagnostics?.errorCode ?? null,
+        retryAfterMs: Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? retryAfterMs : null,
       });
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
@@ -409,9 +444,10 @@ export async function postChatCompletions({
     if (!response.ok) {
       const latencyMs = Date.now() - startMs;
       const bodyText = await response.text();
+      const retryAfterMs = parseRetryAfterMs(response.headers);
       throw Object.assign(
         new Error(`HTTP ${httpStatus}: ${bodyText}`),
-        { httpStatus, latencyMs },
+        { httpStatus, latencyMs, retryAfterMs },
       );
     }
     const payload = stream
