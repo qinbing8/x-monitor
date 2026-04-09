@@ -118,9 +118,16 @@ jobs:
         shell: bash
         run: |
           export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.csv" "./X列表关注者.csv"
-          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/account-score.json" "./account-score.json" || true
-          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.daily.csv" "./X列表关注者.daily.csv" || true
+          if aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.csv" "./X列表关注者.csv"; then
+            echo "Loaded state/X列表关注者.csv from R2."
+          elif [ -f "./X列表关注者.csv" ]; then
+            echo "R2 state/X列表关注者.csv not found; using repository seed file."
+          else
+            echo "::error::Missing required X列表关注者.csv in both R2 and repository root."
+            exit 1
+          fi
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/account-score.json" "./account-score.json" || echo "R2 state/account-score.json not found; keeping repository seed if present."
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.daily.csv" "./X列表关注者.daily.csv" || echo "R2 state/X列表关注者.daily.csv not found; keeping repository seed if present."
           aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/reports/index.json" ".tmp/github-actions/previous-index.json" || true
 
       - name: Run x-monitor pipeline
