@@ -9,12 +9,21 @@ export const FIXTURE_OPENCLAW = {
         baseUrl: 'https://gpt.example/v1',
         apiKey: 'gpt-key',
         api: 'openai-responses',
-        models: [{ id: 'gpt-5.4-xhigh' }],
+        headers: {
+          'User-Agent': 'curl/8.0',
+        },
+        authHeader: true,
+        models: [{ id: 'gpt-5.4-xhigh' }, { id: 'gpt-5.4' }],
       },
       'router-gpt-backup': {
         baseUrl: 'https://gpt-backup.example/v1',
         apiKey: 'gpt-backup-key',
         api: 'openai-completions',
+        headers: {
+          Authorization: 'Bearer gpt-backup-key',
+          'User-Agent': 'curl/8.0',
+        },
+        authHeader: true,
         models: [{ id: 'gpt-5.4-mini' }, { id: 'gpt-5.4' }],
       },
       anyrouter: {
@@ -216,20 +225,41 @@ export async function createMockSkillFixture() {
       },
       gpt: {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt' },
-        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
+        mapping: {
+          baseUrl: 'baseUrl',
+          apiKey: 'apiKey',
+          api: 'api',
+          headers: 'headers',
+          authHeader: 'authHeader',
+          models: 'models',
+        },
       },
       'gpt-backup': {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt-backup' },
-        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
+        mapping: {
+          baseUrl: 'baseUrl',
+          apiKey: 'apiKey',
+          api: 'api',
+          headers: 'headers',
+          authHeader: 'authHeader',
+          models: 'models',
+        },
       },
       claude: {
         configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.anyrouter' },
-        mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
+        mapping: {
+          baseUrl: 'baseUrl',
+          apiKey: 'apiKey',
+          api: 'api',
+          headers: 'headers',
+          authHeader: 'authHeader',
+          models: 'models',
+        },
       },
     },
     models: {
       'gpt-main': { providerRef: 'gpt', modelId: 'gpt-5.4-xhigh' },
-      'gpt-main-mini': { providerRef: 'gpt-backup', modelId: 'gpt-5.4-mini' },
+      'gpt-main-mini': { providerRef: 'gpt', modelId: 'gpt-5.4' },
       'claude-main': { providerRef: 'claude', modelId: 'claude-sonnet-4-6' },
     },
     runtime: {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -27,7 +28,8 @@ function generateRunId() {
   const hh = String(now.getUTCHours()).padStart(2, '0');
   const mm = String(now.getUTCMinutes()).padStart(2, '0');
   const ss = String(now.getUTCSeconds()).padStart(2, '0');
-  return `run-${hh}${mm}${ss}`;
+  const ms = String(now.getUTCMilliseconds()).padStart(3, '0');
+  return `run-${hh}${mm}${ss}${ms}-${randomUUID().slice(0, 8)}`;
 }
 
 export async function ensureRunDir(skillRoot, outputDir, runDate) {

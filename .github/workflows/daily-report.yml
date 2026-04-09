@@ -1,0 +1,170 @@
+name: daily-report
+
+on:
+  schedule:
+    - cron: '5 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  run-daily-report:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+      GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+      GROK_BASE_URL: ${{ secrets.GROK_BASE_URL }}
+      GROK_MODEL: ${{ secrets.GROK_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      OPENAI_BRIEF_MODEL: ${{ secrets.OPENAI_BRIEF_MODEL }}
+      OPENAI_SCREENING_MODEL: ${{ secrets.OPENAI_SCREENING_MODEL }}
+      OPENAI_ROSTER_MODEL: ${{ secrets.OPENAI_ROSTER_MODEL }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Ensure AWS CLI is available
+        shell: bash
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y awscli
+          fi
+          aws --version
+
+      - name: Prepare runtime credential documents
+        shell: bash
+        run: |
+          mkdir -p .tmp/github-actions
+          cat > .tmp/github-actions/search.json <<EOF
+          {
+            "grok": {
+              "apiUrl": "${GROK_BASE_URL}",
+              "apiKey": "${GROK_API_KEY}",
+              "model": "${GROK_MODEL}"
+            }
+          }
+          EOF
+
+          cat > .tmp/github-actions/openclaw.json <<EOF
+          {
+            "models": {
+              "providers": {
+                "router-gpt": {
+                  "baseUrl": "${OPENAI_BASE_URL}",
+                  "apiKey": "${OPENAI_API_KEY}",
+                  "api": "openai-responses",
+                  "headers": {},
+                  "authHeader": true,
+                  "models": [
+                    { "id": "${OPENAI_BRIEF_MODEL}" },
+                    { "id": "${OPENAI_SCREENING_MODEL}" },
+                    { "id": "${OPENAI_ROSTER_MODEL}" }
+                  ]
+                }
+              }
+            }
+          }
+          EOF
+
+          node --input-type=module - <<'EOF'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const config = JSON.parse(readFileSync('config.example.json', 'utf8'));
+          config.sources.credentialFiles = {
+            search: './.tmp/github-actions/search.json',
+            openclaw: './.tmp/github-actions/openclaw.json',
+          };
+          config.models = {
+            ...(config.models ?? {}),
+            'gpt-brief': {
+              providerRef: 'gpt',
+              modelId: process.env.OPENAI_BRIEF_MODEL,
+            },
+            'gpt-screening': {
+              providerRef: 'gpt',
+              modelId: process.env.OPENAI_SCREENING_MODEL,
+            },
+            'gpt-roster': {
+              providerRef: 'gpt',
+              modelId: process.env.OPENAI_ROSTER_MODEL,
+            },
+          };
+          config.analysis.profiles['gpt-default'].modelRef = 'gpt-brief';
+          config.analysis.profiles['gpt-default'].screeningModelRef = 'gpt-screening';
+          config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-roster';
+          writeFileSync('config.github-actions.generated.json', JSON.stringify(config, null, 2));
+          EOF
+
+      - name: Download persisted state from R2
+        shell: bash
+        run: |
+          export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.csv" "./X列表关注者.csv"
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/account-score.json" "./account-score.json" || true
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.daily.csv" "./X列表关注者.daily.csv" || true
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/reports/index.json" ".tmp/github-actions/previous-index.json" || true
+
+      - name: Run x-monitor pipeline
+        shell: bash
+        run: |
+          mkdir -p .tmp/github-actions
+          node scripts/run.mjs --mode run --config ./config.github-actions.generated.json > .tmp/github-actions/run-summary.json
+
+      - name: Build publishable report artifacts
+        shell: bash
+        run: |
+          mkdir -p .tmp/published
+          node scripts/publish-report.mjs \
+            --summary .tmp/github-actions/run-summary.json \
+            --previous-index .tmp/github-actions/previous-index.json \
+            --output-dir .tmp/published
+
+      - name: Upload report artifacts and state back to R2
+        shell: bash
+        run: |
+          export R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws --endpoint-url "${R2_ENDPOINT}" s3 sync ".tmp/published/reports" "s3://${R2_BUCKET_NAME}/reports"
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "./X列表关注者.csv" "s3://${R2_BUCKET_NAME}/state/X列表关注者.csv"
+          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "./account-score.json" "s3://${R2_BUCKET_NAME}/state/account-score.json"
+          if [ -f "./X列表关注者.daily.csv" ]; then
+            aws --endpoint-url "${R2_ENDPOINT}" s3 cp "./X列表关注者.daily.csv" "s3://${R2_BUCKET_NAME}/state/X列表关注者.daily.csv"
+          fi
+
+      - name: Prepare wrangler config
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          node --input-type=module - <<'EOF'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const source = readFileSync('worker/wrangler.toml', 'utf8');
+          const updated = source.replace(
+            /bucket_name = ".*"/,
+            `bucket_name = "${process.env.R2_BUCKET_NAME}"`,
+          );
+          writeFileSync('worker/wrangler.generated.toml', updated);
+          EOF
+
+      - name: Deploy Cloudflare Worker
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          npx --yes wrangler deploy --config worker/wrangler.generated.toml

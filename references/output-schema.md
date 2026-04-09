@@ -186,7 +186,7 @@ alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven develop
   "meta": {
     "analysisProfile": "gpt-default",
     "provider": "gpt",
-    "model": "gpt-5.4(xhigh)",
+    "model": "gpt-5.4-xhigh",
     "analyzedAt": "ISO-8601",
     "analyzeInputPath": "C:/.../analyze.input.json",
     "tweetCount": 18,

@@ -126,6 +126,8 @@
         "baseUrl": "baseUrl",
         "apiKey": "apiKey",
         "api": "api",
+        "headers": "headers",
+        "authHeader": "authHeader",
         "models": "models"
       }
     },
@@ -139,6 +141,8 @@
         "baseUrl": "baseUrl",
         "apiKey": "apiKey",
         "api": "api",
+        "headers": "headers",
+        "authHeader": "authHeader",
         "models": "models"
       }
     },
@@ -152,6 +156,8 @@
         "baseUrl": "baseUrl",
         "apiKey": "apiKey",
         "api": "api",
+        "headers": "headers",
+        "authHeader": "authHeader",
         "models": "models"
       }
     }
@@ -162,8 +168,8 @@
       "modelId": "gpt-5.4-xhigh"
     },
     "gpt-main-mini": {
-      "providerRef": "gpt-backup",
-      "modelId": "gpt-5.4-mini"
+      "providerRef": "gpt",
+      "modelId": "gpt-5.4"
     },
     "claude-main": {
       "providerRef": "claude",

@@ -335,7 +335,38 @@ export async function withRetry(task, retry = {}, options = {}) {
   throw lastError;
 }
 
-export async function postChatCompletions({ baseUrl, apiKey, apiProtocol, model, messages, timeoutMs, temperature, maxTokens, stream = false, fetchImpl = fetch, logger, operationName = 'chat_completion' }) {
+function hasHeader(headers, headerName) {
+  const expected = String(headerName ?? '').trim().toLowerCase();
+  return Object.keys(headers ?? {}).some((key) => key.toLowerCase() === expected);
+}
+
+function buildRequestHeaders({ apiKey, extraHeaders, authHeader }) {
+  const headers = {
+    ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}),
+    'Content-Type': 'application/json',
+  };
+  if (authHeader !== false && !hasHeader(headers, 'Authorization')) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+  return headers;
+}
+
+export async function postChatCompletions({
+  baseUrl,
+  apiKey,
+  apiProtocol,
+  model,
+  messages,
+  timeoutMs,
+  temperature,
+  maxTokens,
+  stream = false,
+  extraHeaders,
+  authHeader = true,
+  fetchImpl = fetch,
+  logger,
+  operationName = 'chat_completion',
+}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error(`Request timed out after ${timeoutMs}ms`)), timeoutMs);
   const startMs = Date.now();
@@ -354,10 +385,7 @@ export async function postChatCompletions({ baseUrl, apiKey, apiProtocol, model,
   try {
     const response = await fetchImpl(requestUrl, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: buildRequestHeaders({ apiKey, extraHeaders, authHeader }),
       body: JSON.stringify(
         resolvedApiProtocol === OPENAI_RESPONSES_API
           ? {

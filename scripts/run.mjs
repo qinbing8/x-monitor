@@ -9,6 +9,7 @@ export function parseArgs(argv) {
     mode: 'run',
     configPath: undefined,
     analysisProfile: undefined,
+    analyzeInputPath: undefined,
     date: undefined,
     seedCsvPath: undefined,
     batchSize: undefined,
@@ -21,6 +22,7 @@ export function parseArgs(argv) {
     if (arg === '--mode' && next) { out.mode = next; i += 1; continue; }
     if (arg === '--config' && next) { out.configPath = next; i += 1; continue; }
     if (arg === '--analysis-profile' && next) { out.analysisProfile = next; i += 1; continue; }
+    if (arg === '--analyze-input' && next) { out.analyzeInputPath = next; i += 1; continue; }
     if (arg === '--date' && next) { out.date = next; i += 1; continue; }
     if (arg === '--seed-csv' && next) { out.seedCsvPath = next; i += 1; continue; }
     if (arg === '--batch-size' && next) { out.batchSize = Number(next); i += 1; continue; }
@@ -30,8 +32,18 @@ export function parseArgs(argv) {
   return out;
 }
 
+function validateOptions(options) {
+  if (options.mode !== 'analyze' && options.analyzeInputPath) {
+    throw new Error('--analyze-input is only supported in analyze mode');
+  }
+  if (options.analyzeInputPath && options.date) {
+    throw new Error('--date cannot be combined with --analyze-input');
+  }
+}
+
 export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const options = parseArgs(argv);
+  validateOptions(options);
   const runFetchImpl = dependencies.runFetchImpl ?? runFetch;
   const runAnalyzeImpl = dependencies.runAnalyzeImpl ?? runAnalyze;
   const prepareDailyRosterImpl = dependencies.prepareDailyRosterImpl ?? prepareDailyRoster;
@@ -61,6 +73,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
       configPath: options.configPath,
       date: options.date,
       analysisProfile: options.analysisProfile,
+      analyzeInputPath: options.analyzeInputPath,
     });
   }
   return summary;

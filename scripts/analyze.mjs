@@ -12,6 +12,7 @@ const MIN_ANALYZE_TIMEOUT_MS = 300000;
 const MIN_TOTAL_ACCOUNTS_FOR_QUALITY_GATE = 10;
 const MIN_HEALTHY_COVERED_ACCOUNTS = 3;
 const MIN_HEALTHY_TWEETS = 12;
+const MIN_HEALTHY_COVERAGE_RATE = 0.25;
 const MAX_DIGEST_EVIDENCE_TWEETS = 24;
 const MAX_DIGEST_EVIDENCE_PER_ACCOUNT = 3;
 const MAX_DIGEST_EVIDENCE_SOFT_PER_ACCOUNT = 4;
@@ -41,6 +42,27 @@ const NOISE_PATTERNS = [
   /如果有实际数据会替换/,
   /will\s+be\s+replaced\s+with\s+actual/i,
   /example\s+(tweet|post|content)/i,
+];
+const PROMOTIONAL_PATTERNS = [
+  /\b(?:\d+\s*)?(?:hours?|hrs?|days?)\s*(?:left)?\b/i,
+  /\bfree\b/i,
+  /\bstrategy\s+session\b/i,
+  /\b(?:join|get in|upgrade|buy now|claim|sign up|enroll)\b/i,
+  /\bgrab\b/i,
+  /\b(?:seat|seats|spots?)\b/i,
+  /\bpremium\b/i,
+  /\bbundle\b/i,
+  /(?:\$|usd\s?)\d|\b\d+\s*(?:k|m)\b/i,
+  /\b\d+x\b/i,
+  /\bbonus(?:es)?\b/i,
+  /\blifetime\b/i,
+  /\bunlimited\b/i,
+  /\bweekly\b/i,
+  /\b(?:deals?|discounts?|sales?|offers?)\b/i,
+  /\bprompts?\s+for\s+marketing\b/i,
+  /\bdigital\s+entrepreneurs?\b/i,
+  /\b(?:coaching|course|training|boardroom|membership)\b/i,
+  /\b(?:vault|agency credit|referrals?|discord|accountability)\b/i,
 ];
 const MIN_SIGNAL_TEXT_LENGTH = 15;
 const CONTINUATION_PROMPT = '请继续输出，从上次中断的地方接续，不要重复已输出的内容。';
@@ -109,6 +131,10 @@ function normalizeTweetTextForPrompt(text) {
     .trim();
 }
 
+function normalizeTweetTextForHeuristics(text) {
+  return normalizeTweetTextForPrompt(text).normalize('NFKC');
+}
+
 export function compactTweetText(text, maxChars = MAX_DIGEST_EVIDENCE_TEXT_CHARS) {
   const normalized = normalizeTweetTextForPrompt(text);
   if (normalized.length <= maxChars) return normalized;
@@ -143,12 +169,28 @@ function summarizeWarningsForPrompt(warnings = []) {
   };
 }
 
+function countMatchedPatterns(text, patterns) {
+  return patterns.reduce((count, pattern) => count + (pattern.test(text) ? 1 : 0), 0);
+}
+
+function countPromotionalSignals(text) {
+  return countMatchedPatterns(normalizeTweetTextForHeuristics(text), PROMOTIONAL_PATTERNS);
+}
+
+function isStronglyPromotionalDigestItem(item) {
+  return countPromotionalSignals(item?.text) >= 3;
+}
+
 function scoreDigestItem(item) {
   const text = normalizeTweetTextForPrompt(item?.text);
   let score = Math.min(text.length, 240);
   if (/https?:\/\//i.test(text)) score += 120;
   if (/(github|demo|release|launched|launch|benchmark|paper|dataset|tutorial|guide|agent|model|open\s+source)/i.test(text)) score += 80;
   if (/\d/.test(text)) score += 20;
+  const promotionalSignalCount = countPromotionalSignals(text);
+  if (promotionalSignalCount >= 3) {
+    score -= 220 + ((promotionalSignalCount - 3) * 40);
+  }
   return score;
 }
 
@@ -171,18 +213,27 @@ function chunkArray(items, chunkSize) {
 export function selectDigestEvidenceItems(items, options = {}) {
   const maxTotalItems = Math.max(1, Number(options.maxTotalItems ?? MAX_DIGEST_EVIDENCE_TWEETS) || MAX_DIGEST_EVIDENCE_TWEETS);
   const maxItemsPerAccount = Math.max(1, Number(options.maxItemsPerAccount ?? MAX_DIGEST_EVIDENCE_PER_ACCOUNT) || MAX_DIGEST_EVIDENCE_PER_ACCOUNT);
+  const allowStrongPromotionalFill = options.allowStrongPromotionalFill === true;
   const rankedItems = [...(Array.isArray(items) ? items : [])]
     .sort(compareDigestItems);
+  const preferredItems = rankedItems.filter((item) => !isStronglyPromotionalDigestItem(item));
 
   const selected = [];
+  const selectedTweetIds = new Set();
   const perAccountCounts = new Map();
-  for (const item of rankedItems) {
+  for (const pool of allowStrongPromotionalFill ? [preferredItems, rankedItems] : [preferredItems]) {
+    for (const item of pool) {
+      if (selected.length >= maxTotalItems) break;
+      const tweetId = String(item?.tweetId ?? '').trim();
+      if (tweetId && selectedTweetIds.has(tweetId)) continue;
+      const handle = String(item?.username ?? '').trim().toLowerCase();
+      const currentCount = perAccountCounts.get(handle) ?? 0;
+      if (currentCount >= maxItemsPerAccount) continue;
+      selected.push(item);
+      if (tweetId) selectedTweetIds.add(tweetId);
+      perAccountCounts.set(handle, currentCount + 1);
+    }
     if (selected.length >= maxTotalItems) break;
-    const handle = String(item?.username ?? '').trim().toLowerCase();
-    const currentCount = perAccountCounts.get(handle) ?? 0;
-    if (currentCount >= maxItemsPerAccount) continue;
-    selected.push(item);
-    perAccountCounts.set(handle, currentCount + 1);
   }
 
   return selected.sort((left, right) => String(right.createdAt ?? '').localeCompare(String(left.createdAt ?? '')));
@@ -298,6 +349,43 @@ function parseDigestSummaryResponse(text) {
   })).filter((entry) => entry.headline && entry.summary);
 }
 
+function buildLocalDigestSummaryEntries(items, chunkIndex) {
+  const rankedItems = [...(Array.isArray(items) ? items : [])].sort(compareDigestItems);
+  if (rankedItems.length === 0) return [];
+
+  const handles = [...new Set(
+    rankedItems
+      .map((item) => String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, ''))
+      .filter(Boolean),
+  )];
+  const tweetIds = rankedItems
+    .map((item) => String(item?.tweetId ?? '').trim())
+    .filter(Boolean);
+  const topHandles = handles.slice(0, 2).map((handle) => `@${handle}`);
+  const headlineBase = topHandles.length === 0
+    ? `第 ${chunkIndex + 1} 组重点更新`
+    : topHandles.length === 1
+      ? `${topHandles[0]} 重点更新`
+      : handles.length > 2
+        ? `${topHandles.join(' / ')} 等重点更新`
+        : `${topHandles.join(' / ')} 重点更新`;
+  const summaryParts = rankedItems
+    .slice(0, 2)
+    .map((item) => compactTweetText(String(item?.text ?? '').replace(/https?:\/\/\S+/gi, '').trim(), 72))
+    .filter(Boolean);
+  const summaryBase = summaryParts.length > 0
+    ? summaryParts.join('；')
+    : `本组包含 ${rankedItems.length} 条高价值推文线索。`;
+
+  return [{
+    headline: compactTweetText(headlineBase, MAX_DIGEST_SUMMARY_HEADLINE_CHARS),
+    summary: compactTweetText(summaryBase, MAX_DIGEST_SUMMARY_TEXT_CHARS),
+    tweetIds,
+    handles,
+    chunkIndex: chunkIndex + 1,
+  }];
+}
+
 async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems, accounts, profile, fetchImpl, timeoutMs, logger } = {}) {
   const shouldSummarize = Array.isArray(digestItems)
     && digestItems.length > 0
@@ -318,6 +406,7 @@ async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems,
   const summaryChunks = chunkArray(digestItems, MAX_DIGEST_SUMMARY_CHUNK_ITEMS);
   const summaryConcurrency = Math.max(1, Number(profile.concurrency ?? 1) || 1);
   let failedChunkCount = 0;
+  let fallbackChunkCount = 0;
 
   logger?.info('digest_summary_start', {
     digestItemCount: digestItems.length,
@@ -340,6 +429,8 @@ async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems,
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
           apiProtocol: profile.provider.api ?? profile.apiProtocol,
+          extraHeaders: profile.provider.headers,
+          authHeader: profile.provider.authHeader,
           model: profile.modelId,
           timeoutMs,
           temperature: 0,
@@ -362,6 +453,18 @@ async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems,
         chunkIndex: index + 1,
       }));
     } catch (error) {
+      const fallbackEntries = buildLocalDigestSummaryEntries(chunkItems, index);
+      if (fallbackEntries.length > 0) {
+        fallbackChunkCount += 1;
+        logger?.warn('digest_summary_chunk_local_fallback', {
+          chunkIndex: index + 1,
+          tweetCount: chunkItems.length,
+          summaryItemCount: fallbackEntries.length,
+          error: error?.message ?? String(error),
+        });
+        return fallbackEntries;
+      }
+
       failedChunkCount += 1;
       logger?.warn('digest_summary_chunk_failed', {
         chunkIndex: index + 1,
@@ -376,11 +479,16 @@ async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems,
     digestItemCount: digestItems.length,
     summaryChunkCount: summaryChunks.length,
     summaryFailedChunkCount: failedChunkCount,
+    summaryFallbackChunkCount: fallbackChunkCount,
     summaryItemCount: summaryResults.flat().length,
   });
 
   return {
-    evidenceBlockMode: failedChunkCount > 0 ? 'chunked_digest_summary_partial' : 'chunked_digest_summary',
+    evidenceBlockMode: failedChunkCount > 0
+      ? 'chunked_digest_summary_partial'
+      : fallbackChunkCount > 0
+        ? 'chunked_digest_summary_fallback'
+        : 'chunked_digest_summary',
     chunkSummaries: summaryResults.flat(),
     summaryChunkCount: summaryChunks.length,
     summaryFailedChunkCount: failedChunkCount,
@@ -571,6 +679,8 @@ async function screenSignalTweetsWithModel({ runDate, signalItems, profile, fetc
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
           apiProtocol: profile.provider.api ?? profile.apiProtocol,
+          extraHeaders: profile.provider.headers,
+          authHeader: profile.provider.authHeader,
           model: profile.modelId,
           timeoutMs,
           temperature: 0,
@@ -923,7 +1033,15 @@ async function finalizeAnalyzeRun({
     signalItems,
     warnings,
   });
+  const quality = assessBriefQuality({
+    coverage,
+    tweetCount: items.length,
+    signalTweetCount: signalItems.length,
+    summaryChunkCount,
+    summaryFailedChunkCount,
+  });
   let continuationResult;
+  let failureSummary = null;
   try {
     continuationResult = await runAnalysisWithContinuation({
       profile,
@@ -982,33 +1100,35 @@ async function finalizeAnalyzeRun({
       operationName: failureArtifact.error.operationName,
       analyzeErrorPath,
     });
-    try {
-      error.analyzeErrorPath = analyzeErrorPath;
-      error.analyzeRunDir = runDir;
-    } catch {
-      // Ignore non-extensible error objects.
-    }
-    throw error;
+    continuationResult = {
+      text: '',
+      finishReason: null,
+      continuationRounds: 0,
+      truncated: false,
+      durationMs: Number(failureArtifact.error?.continuation?.durationMs ?? 0) || 0,
+      diagnostics: failureArtifact.error ?? null,
+    };
+    failureSummary = analyzeErrorPath
+      ? `> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。详细诊断见 ${analyzeErrorFileName}。`
+      : '> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。';
   }
 
   const outputText = continuationResult.text.trim();
-  const quality = assessBriefQuality({
-    coverage,
-    tweetCount: items.length,
-    signalTweetCount: signalItems.length,
-  });
   let answerSource = 'model';
   let finalMarkdown = injectQualityBanner(outputText, quality);
   if (!finalMarkdown) {
     answerSource = 'fallback';
-    finalMarkdown = buildFallbackDailyBrief({
+    finalMarkdown = injectQualityBanner(buildFallbackDailyBrief({
       runDate,
       quality,
       diagnosis: fetchDiagnosis,
       coverage,
       tweetCount: items.length,
       signalTweetCount: signalItems.length,
-    });
+      digestItems,
+      chunkSummaries,
+      failureSummary,
+    }), quality);
   }
   const analyzeDurationMs = Date.now() - startedAt;
   const analyzeResult = {
@@ -1082,30 +1202,50 @@ function summarizeCoverage(accounts) {
   const totalAccountCount = accounts.length;
   const coveredAccountCount = accounts.filter((account) => account.status === 'covered').length;
   const noTweetAccountCount = accounts.filter((account) => account.status === 'no_tweets_found').length;
+  const dormantAccountCount = accounts.filter((account) => account.status === 'dormant_skipped').length;
   const failedAccountCount = accounts.filter((account) => account.status === 'fetch_failed').length;
   const incompleteAccountCount = accounts.filter((account) => account.status === 'incomplete').length;
   return {
     totalAccountCount,
     coveredAccountCount,
     noTweetAccountCount,
+    dormantAccountCount,
     failedAccountCount,
     incompleteAccountCount,
   };
 }
 
-export function assessBriefQuality({ coverage, tweetCount, signalTweetCount }) {
+export function assessBriefQuality({ coverage, tweetCount, signalTweetCount, summaryChunkCount, summaryFailedChunkCount }) {
   const safeCoverage = coverage ?? summarizeCoverage([]);
   const totalAccountCount = Number(safeCoverage.totalAccountCount ?? 0) || 0;
   const coveredAccountCount = Number(safeCoverage.coveredAccountCount ?? 0) || 0;
+  const noTweetAccountCount = Number(safeCoverage.noTweetAccountCount ?? 0) || 0;
+  const dormantAccountCount = Number(safeCoverage.dormantAccountCount ?? 0) || 0;
   const incompleteAccountCount = Number(safeCoverage.incompleteAccountCount ?? 0) || 0;
   const failedAccountCount = Number(safeCoverage.failedAccountCount ?? 0) || 0;
   const safeTweetCount = Number(tweetCount ?? 0) || 0;
   const safeSignalCount = Number(signalTweetCount ?? safeTweetCount) || 0;
-  const coverageRate = totalAccountCount > 0 ? coveredAccountCount / totalAccountCount : 0;
+  const safeSummaryChunkCount = Number(summaryChunkCount ?? 0) || 0;
+  const safeSummaryFailedChunkCount = Number(summaryFailedChunkCount ?? 0) || 0;
+  const eligibleAccountCount = Math.max(0, totalAccountCount - dormantAccountCount);
+  const resolvedAccountCount = coveredAccountCount + noTweetAccountCount;
+  const coverageBaseCount = eligibleAccountCount > 0 ? eligibleAccountCount : totalAccountCount;
+  const coverageRate = coverageBaseCount > 0 ? resolvedAccountCount / coverageBaseCount : 0;
   const signalRate = safeTweetCount > 0 ? safeSignalCount / safeTweetCount : 0;
-  const hasCoverageRisk = failedAccountCount > 0 || incompleteAccountCount > 0;
-  const lowCoverage = totalAccountCount >= MIN_TOTAL_ACCOUNTS_FOR_QUALITY_GATE
-    && (coveredAccountCount < MIN_HEALTHY_COVERED_ACCOUNTS || safeSignalCount < MIN_HEALTHY_TWEETS || coverageRate < 0.1);
+  const unresolvedAccountCount = failedAccountCount + incompleteAccountCount;
+  const hasCoverageRisk = failedAccountCount > 0
+    || (
+      coverageBaseCount >= MIN_TOTAL_ACCOUNTS_FOR_QUALITY_GATE
+      && unresolvedAccountCount > 0
+      && (unresolvedAccountCount / coverageBaseCount) > 0.1
+    );
+  const summarySynthesisFailed = safeSummaryChunkCount > 0 && safeSummaryFailedChunkCount >= safeSummaryChunkCount;
+  const lowCoverage = coverageBaseCount >= MIN_TOTAL_ACCOUNTS_FOR_QUALITY_GATE
+    && (
+      coveredAccountCount < MIN_HEALTHY_COVERED_ACCOUNTS
+      || safeSignalCount < MIN_HEALTHY_TWEETS
+      || coverageRate < MIN_HEALTHY_COVERAGE_RATE
+    );
 
   if (safeSignalCount === 0 || coveredAccountCount === 0) {
     return {
@@ -1113,15 +1253,16 @@ export function assessBriefQuality({ coverage, tweetCount, signalTweetCount }) {
       needsReview: true,
       coverageRate,
       signalRate,
-      note: `No window-valid signal tweet evidence was captured. Current coverage is ${coveredAccountCount}/${totalAccountCount} accounts with ${safeSignalCount} signal tweets (${safeTweetCount} total, ${safeTweetCount - safeSignalCount} noise filtered).`,
+      note: `No window-valid signal tweet evidence was captured. Current coverage is ${coveredAccountCount}/${coverageBaseCount || totalAccountCount} eligible accounts with ${safeSignalCount} signal tweets (${safeTweetCount} total, ${safeTweetCount - safeSignalCount} noise filtered).`,
     };
   }
 
-  if (hasCoverageRisk || lowCoverage) {
+  if (hasCoverageRisk || lowCoverage || summarySynthesisFailed) {
     const reasons = [];
-    if (lowCoverage) reasons.push(`limited sample (${coveredAccountCount}/${totalAccountCount} accounts, ${safeSignalCount} signal tweets)`);
-    if (incompleteAccountCount > 0) reasons.push(`${incompleteAccountCount} incomplete accounts`);
+    if (lowCoverage) reasons.push(`limited sample (${resolvedAccountCount}/${coverageBaseCount || totalAccountCount} eligible accounts resolved, ${coveredAccountCount} covered, ${safeSignalCount} signal tweets)`);
+    if (incompleteAccountCount > 0 && hasCoverageRisk) reasons.push(`${incompleteAccountCount} incomplete accounts`);
     if (failedAccountCount > 0) reasons.push(`${failedAccountCount} failed accounts`);
+    if (summarySynthesisFailed) reasons.push(`summary synthesis failed (${safeSummaryFailedChunkCount}/${safeSummaryChunkCount} chunks)`);
     if (signalRate < 0.5 && safeTweetCount > 0) reasons.push(`low signal-to-noise ratio (${Math.round(signalRate * 100)}%)`);
     return {
       status: 'degraded',
@@ -1178,7 +1319,7 @@ export function diagnoseFetchEvidence({ accounts = [], items = [], signalItems =
   };
 }
 
-function buildFallbackDailyBrief({ runDate, quality, diagnosis, coverage, tweetCount, signalTweetCount }) {
+function buildDiagnosticFallbackDailyBrief({ runDate, quality, diagnosis, coverage, tweetCount, signalTweetCount }) {
   const warningTypes = Array.isArray(diagnosis?.warningTypes) && diagnosis.warningTypes.length > 0
     ? diagnosis.warningTypes.join(', ')
     : 'none';
@@ -1201,6 +1342,116 @@ function buildFallbackDailyBrief({ runDate, quality, diagnosis, coverage, tweetC
     '- 先检查 Grok 抓取日志、名单覆盖和 24 小时时间窗口是否正常。',
     '- 如果抓取正常，再检查 GPT 请求日志、超时和返回内容是否为空。',
   ].filter(Boolean).join('\n');
+}
+
+function buildStructuredFallbackDailyBrief({
+  runDate,
+  quality,
+  diagnosis,
+  coverage,
+  tweetCount,
+  signalTweetCount,
+  digestItems = [],
+  chunkSummaries = [],
+  failureSummary = null,
+} = {}) {
+  const safeDigestItems = Array.isArray(digestItems) ? digestItems.filter(Boolean) : [];
+  const safeChunkSummaries = Array.isArray(chunkSummaries) ? chunkSummaries.filter(Boolean) : [];
+  const rankedDigestItems = [...safeDigestItems].sort(compareDigestItems);
+  const preferredDigestItems = [...selectDigestEvidenceItems(rankedDigestItems, {
+    maxTotalItems: rankedDigestItems.length || 1,
+    maxItemsPerAccount: MAX_DIGEST_EVIDENCE_SOFT_PER_ACCOUNT,
+  })].sort(compareDigestItems);
+  const displayDigestItems = preferredDigestItems.length > 0 ? preferredDigestItems : rankedDigestItems;
+  const promotionalItemsDropped = preferredDigestItems.length > 0 && preferredDigestItems.length < rankedDigestItems.length;
+
+  const summaryLines = ((safeChunkSummaries.length > 0 && !promotionalItemsDropped) ? safeChunkSummaries : displayDigestItems.slice(0, 4).map((item) => ({
+    headline: `@${item.username}`,
+    summary: compactTweetText(item.text, 100),
+  })))
+    .slice(0, 4)
+    .map((entry) => {
+      const headline = String(entry?.headline ?? '').trim() || '重点更新';
+      const summary = String(entry?.summary ?? '').trim();
+      return summary ? `- ${headline}：${summary}` : `- ${headline}`;
+    });
+
+  const editorLines = displayDigestItems.slice(0, 5).map((item) => {
+    const handle = String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, '') || 'unknown';
+    const text = compactTweetText(item?.text ?? '', 90);
+    const url = String(item?.originalUrl ?? '').trim();
+    return [text ? `- @${handle}：${text}` : `- @${handle}`, url ? `  - ${url}` : null].filter(Boolean).join('\n');
+  });
+
+  const digestLines = displayDigestItems.slice(0, 8).map((item) => {
+    const handle = String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, '') || 'unknown';
+    const text = compactTweetText(item?.text ?? '', 110);
+    const url = String(item?.originalUrl ?? '').trim();
+    return `- @${handle}：${text}${url ? ` ${url}` : ''}`.trim();
+  });
+
+  const coverageLines = [
+    `- 抓取账号覆盖：${coverage.coveredAccountCount}/${coverage.totalAccountCount}`,
+    `- 无符合条件推文账号：${coverage.noTweetAccountCount ?? 0}`,
+    `- 休眠跳过账号：${coverage.dormantAccountCount ?? 0}`,
+    `- 未完成账号：${coverage.incompleteAccountCount ?? 0}`,
+    `- 原始推文数：${tweetCount}`,
+    `- 信号推文数：${signalTweetCount}`,
+    `- 抓取诊断：${diagnosis?.note ?? 'No diagnosis available.'}`,
+  ];
+
+  return [
+    `# X 日报 | ${runDate}`,
+    '',
+    failureSummary ?? '> 终稿模型未产出可用正文，以下内容基于已完成的抓取、筛选与摘要结果自动整理。',
+    '',
+    '## 今日要点摘要',
+    ...summaryLines,
+    '',
+    '## 编辑精选',
+    ...editorLines,
+    '',
+    '## 高价值推文完整清单',
+    ...digestLines,
+    '',
+    '## 抓取覆盖与缺口',
+    ...(quality?.note ? [`- 质量门控：${quality.note}`] : []),
+    ...coverageLines,
+  ].filter(Boolean).join('\n');
+}
+
+function buildFallbackDailyBrief({
+  runDate,
+  quality,
+  diagnosis,
+  coverage,
+  tweetCount,
+  signalTweetCount,
+  digestItems = [],
+  chunkSummaries = [],
+  failureSummary = null,
+} = {}) {
+  if (Array.isArray(digestItems) && digestItems.length > 0) {
+    return buildStructuredFallbackDailyBrief({
+      runDate,
+      quality,
+      diagnosis,
+      coverage,
+      tweetCount,
+      signalTweetCount,
+      digestItems,
+      chunkSummaries,
+      failureSummary,
+    });
+  }
+  return buildDiagnosticFallbackDailyBrief({
+    runDate,
+    quality,
+    diagnosis,
+    coverage,
+    tweetCount,
+    signalTweetCount,
+  });
 }
 
 export function injectQualityBanner(markdown, quality) {
@@ -1320,6 +1571,8 @@ export async function runAnalysisWithContinuation({ profile, messages, fetchImpl
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
           apiProtocol: profile.provider.api ?? profile.apiProtocol,
+          extraHeaders: profile.provider.headers,
+          authHeader: profile.provider.authHeader,
           model: profile.modelId,
           timeoutMs,
           temperature: profile.temperature,

@@ -48,6 +48,39 @@ test('assessBriefQuality marks empty and degraded coverage correctly', () => {
   assert.equal(degraded.needsReview, true);
 });
 
+test('assessBriefQuality degrades low-coverage digests when all summary chunks fail', () => {
+  const degraded = assessBriefQuality({
+    coverage: { totalAccountCount: 125, coveredAccountCount: 25, incompleteAccountCount: 0, failedAccountCount: 0 },
+    tweetCount: 116,
+    signalTweetCount: 107,
+    summaryChunkCount: 6,
+    summaryFailedChunkCount: 6,
+  });
+  assert.equal(degraded.status, 'degraded');
+  assert.equal(degraded.needsReview, true);
+  assert.match(degraded.note, /limited sample/i);
+  assert.match(degraded.note, /summary/i);
+});
+
+test('assessBriefQuality keeps live-like briefs healthy when dormant and no-tweet accounts are already resolved', () => {
+  const quality = assessBriefQuality({
+    coverage: {
+      totalAccountCount: 125,
+      coveredAccountCount: 28,
+      noTweetAccountCount: 23,
+      dormantAccountCount: 73,
+      incompleteAccountCount: 1,
+      failedAccountCount: 0,
+    },
+    tweetCount: 127,
+    signalTweetCount: 119,
+    summaryChunkCount: 5,
+    summaryFailedChunkCount: 0,
+  });
+  assert.equal(quality.status, 'ok');
+  assert.equal(quality.needsReview, false);
+});
+
 test('injectQualityBanner prefixes degraded markdown and leaves healthy markdown untouched', () => {
   const markdown = '# Report\n\nBody';
   const degraded = injectQualityBanner(markdown, { status: 'degraded', note: 'Partial evidence.' });
@@ -98,6 +131,167 @@ test('selectDigestEvidenceItems caps prompt evidence by account and total count'
 
   assert.equal(selected.length, 4);
   assert.equal(selected.filter((item) => item.username === 'alice').length, 2);
+});
+
+test('selectDigestEvidenceItems deprioritizes promotional tweets in heuristic fallback', () => {
+  const items = [
+    {
+      tweetId: 'promo-1',
+      username: 'marketer',
+      createdAt: '2026-03-23T09:05:00Z',
+      text: '🔥 9 HOURS LEFT: join now for my AI agent system, 1000+ workflows, private guide, daily coaching, demo vault, model stack, lifetime deal, $57K bonuses, upgrade today https://example.com/buy-now',
+    },
+    {
+      tweetId: 'tech-1',
+      username: 'builder',
+      createdAt: '2026-03-23T09:00:00Z',
+      text: 'OpenClaw MCP server shipped a reusable messaging layer with docs, benchmark notes, and GitHub examples https://github.com/example/openclaw-mcp',
+    },
+  ];
+
+  const selected = selectDigestEvidenceItems(items, {
+    maxTotalItems: 1,
+    maxItemsPerAccount: 1,
+  });
+
+  assert.equal(selected.length, 1);
+  assert.equal(selected[0].tweetId, 'tech-1');
+});
+
+test('selectDigestEvidenceItems drops strategy-session and premium-bundle promos when enough technical tweets exist', () => {
+  const items = [
+    {
+      tweetId: 'promo-julian',
+      username: 'JulianGoldieSEO',
+      createdAt: '2026-03-31T04:32:34Z',
+      text: 'Free SEO Strategy Session Before Everyone Else Finds It. Digital entrepreneurs grab this free SEO strategy session today https://example.com/seo-session',
+    },
+    {
+      tweetId: 'promo-bundle',
+      username: 'rryssf_',
+      createdAt: '2026-03-31T03:10:00Z',
+      text: 'Your premium AI bundle to 10x your business. Prompts for marketing, unlimited custom prompts, weekly automations https://example.com/premium-bundle',
+    },
+    {
+      tweetId: 'tech-1',
+      username: 'builder-1',
+      createdAt: '2026-03-31T02:00:00Z',
+      text: 'Released an open source agent evaluation toolkit with benchmark docs and GitHub examples https://github.com/example/evals',
+    },
+    {
+      tweetId: 'tech-2',
+      username: 'builder-2',
+      createdAt: '2026-03-31T01:30:00Z',
+      text: 'Paper notes on reliable memory systems plus a runnable demo and dataset links https://example.com/research-memory',
+    },
+    {
+      tweetId: 'tech-3',
+      username: 'builder-3',
+      createdAt: '2026-03-31T01:00:00Z',
+      text: 'New tracing guide for Codex workflows with concrete implementation steps https://example.com/tracing-guide',
+    },
+  ];
+
+  const selected = selectDigestEvidenceItems(items, {
+    maxTotalItems: 3,
+    maxItemsPerAccount: 1,
+  });
+
+  assert.equal(selected.length, 3);
+  assert.deepEqual(new Set(selected.map((item) => item.tweetId)), new Set(['tech-1', 'tech-2', 'tech-3']));
+});
+
+test('selectDigestEvidenceItems prefers returning fewer items over refilling strong promos', () => {
+  const items = [
+    {
+      tweetId: 'promo-1',
+      username: 'marketer',
+      createdAt: '2026-03-31T04:32:34Z',
+      text: 'Free SEO Strategy Session Before Everyone Else Finds It. Digital entrepreneurs grab this free SEO strategy session today https://example.com/seo-session',
+    },
+    {
+      tweetId: 'tech-1',
+      username: 'builder-1',
+      createdAt: '2026-03-31T02:00:00Z',
+      text: 'Released an open source agent evaluation toolkit with benchmark docs and GitHub examples https://github.com/example/evals',
+    },
+    {
+      tweetId: 'tech-2',
+      username: 'builder-2',
+      createdAt: '2026-03-31T01:30:00Z',
+      text: 'Paper notes on reliable memory systems plus a runnable demo and dataset links https://example.com/research-memory',
+    },
+  ];
+
+  const selected = selectDigestEvidenceItems(items, {
+    maxTotalItems: 3,
+    maxItemsPerAccount: 1,
+  });
+
+  assert.equal(selected.length, 2);
+  assert.deepEqual(new Set(selected.map((item) => item.tweetId)), new Set(['tech-1', 'tech-2']));
+});
+
+test('selectDigestEvidenceItems drops urgency promos with hours, seats, and offers', () => {
+  const items = [
+    {
+      tweetId: 'promo-urgency',
+      username: 'JulianGoldieSEO',
+      createdAt: '2026-03-31T04:23:35Z',
+      text: '3HRS. 1 SEAT. YOU MISSED TWO OFFERS THIS WEEK. THIS IS THE LAST CALL https://example.com/offer',
+    },
+    {
+      tweetId: 'tech-1',
+      username: 'builder-1',
+      createdAt: '2026-03-31T02:00:00Z',
+      text: 'Released an open source agent evaluation toolkit with benchmark docs and GitHub examples https://github.com/example/evals',
+    },
+    {
+      tweetId: 'tech-2',
+      username: 'builder-2',
+      createdAt: '2026-03-31T01:30:00Z',
+      text: 'Paper notes on reliable memory systems plus a runnable demo and dataset links https://example.com/research-memory',
+    },
+  ];
+
+  const selected = selectDigestEvidenceItems(items, {
+    maxTotalItems: 3,
+    maxItemsPerAccount: 1,
+  });
+
+  assert.equal(selected.length, 2);
+  assert.deepEqual(new Set(selected.map((item) => item.tweetId)), new Set(['tech-1', 'tech-2']));
+});
+
+test('selectDigestEvidenceItems drops unicode-styled urgency promos after heuristic normalization', () => {
+  const items = [
+    {
+      tweetId: 'promo-unicode-urgency',
+      username: 'JulianGoldieSEO',
+      createdAt: '2026-03-31T04:23:35Z',
+      text: '🚨 𝟯𝗛𝗥𝗦. 𝟭 𝗦𝗘𝗔𝗧. 𝗬𝗢𝗨 𝗠𝗜𝗦𝗦𝗘𝗗 𝗧𝗪𝗢 𝗢𝗙𝗙𝗘𝗥𝗦 𝗧𝗛𝗜𝗦 𝗪𝗘𝗘𝗞. 𝗧𝗛𝗜𝗦 𝗜𝗦 𝗧𝗛𝗘 𝗟𝗔𝗦𝗧 𝗢𝗡𝗘.',
+    },
+    {
+      tweetId: 'tech-1',
+      username: 'builder-1',
+      createdAt: '2026-03-31T02:00:00Z',
+      text: 'Released an open source agent evaluation toolkit with benchmark docs and GitHub examples https://github.com/example/evals',
+    },
+    {
+      tweetId: 'tech-2',
+      username: 'builder-2',
+      createdAt: '2026-03-31T01:30:00Z',
+      text: 'Paper notes on reliable memory systems plus a runnable demo and dataset links https://example.com/research-memory',
+    },
+  ];
+
+  const selected = selectDigestEvidenceItems(items, {
+    maxTotalItems: 3,
+    maxItemsPerAccount: 1,
+  });
+
+  assert.equal(selected.length, 2);
+  assert.deepEqual(new Set(selected.map((item) => item.tweetId)), new Set(['tech-1', 'tech-2']));
 });
 
 test('parseCandidateScreeningResponse extracts structured candidates from JSON output', () => {

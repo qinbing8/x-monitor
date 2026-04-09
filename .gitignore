@@ -1,7 +1,9 @@
 .ace-tool/
 .claude/
+.tmp/
 data/
 config.json
+config.github-actions.generated.json
 *.csv
 account-score.json
 claude code 执行日志-*.log

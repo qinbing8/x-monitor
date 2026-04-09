@@ -178,3 +178,45 @@ test('postChatCompletions can consume streaming responses API responses', async 
   assert.equal(completion.diagnostics.promptTokens, 9);
   assert.equal(completion.diagnostics.completionTokens, 4);
 });
+
+test('postChatCompletions forwards provider headers and can disable Authorization header', async () => {
+  let requestHeaders = null;
+  await postChatCompletions({
+    baseUrl: 'https://example.com/v1',
+    apiKey: 'test-key',
+    apiProtocol: 'openai-responses',
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: 'hello' }],
+    timeoutMs: 5000,
+    temperature: 0,
+    maxTokens: 32,
+    extraHeaders: {
+      'User-Agent': 'curl/8.0',
+      'X-Test-Header': '1',
+    },
+    authHeader: false,
+    fetchImpl: async (_url, options) => {
+      requestHeaders = options.headers;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          object: 'response',
+          status: 'completed',
+          output_text: 'world',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'world', annotations: [] }],
+          }],
+          usage: { input_tokens: 12, output_tokens: 7 },
+        }),
+      };
+    },
+  });
+
+  assert.equal(requestHeaders['User-Agent'], 'curl/8.0');
+  assert.equal(requestHeaders['X-Test-Header'], '1');
+  assert.equal('Authorization' in requestHeaders, false);
+});

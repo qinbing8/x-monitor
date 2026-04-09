@@ -38,6 +38,8 @@ test('repo analysis profiles keep timeout above the known live-run failure thres
     assert.ok(config.analysis.profiles['claude-default'].timeoutMs > 90000, `${label} claude-default timeoutMs must stay above 90000ms`);
     assert.equal(config.analysis.profiles['gpt-default'].rosterModelRef, 'gpt-main-mini');
     assert.equal(config.analysis.profiles['gpt-default'].screeningModelRef, 'gpt-main-mini');
+    assert.equal(config.models['gpt-main-mini'].providerRef, 'gpt');
+    assert.equal(config.models['gpt-main-mini'].modelId, 'gpt-5.4');
   }
 });
 
@@ -74,8 +76,8 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.meta.analysisProfile, 'gpt-default');
     assert.equal(analyzeResult.meta.provider, 'gpt');
     assert.equal(analyzeResult.meta.model, 'gpt-5.4-xhigh');
-    assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
-    assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
+    assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4');
+    assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4');
     assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4-xhigh');
     assert.equal(analyzeResult.meta.tweetCount, 2);
     assert.equal(analyzeResult.meta.coverage.failedAccountCount, 0);
@@ -389,7 +391,7 @@ test('runAnalyze overlaps roster scoring with screening before the final brief',
   }
 });
 
-test('runAnalyze writes a readable fallback diagnosis when the GPT brief is empty', async () => {
+test('runAnalyze writes a readable structured fallback brief when the GPT brief is empty', async () => {
   const fixture = await createMockSkillFixture();
   try {
     await runFetch({
@@ -408,16 +410,18 @@ test('runAnalyze writes a readable fallback diagnosis when the GPT brief is empt
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.answer.source, 'fallback');
     assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
-    assert.match(analyzeResult.answer.markdown, /GPT 未返回可用日报正文/);
+    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /高价值推文完整清单/);
+    assert.match(analyzeResult.answer.markdown, /https:\/\/x\.com\/alice\/status\/190001/);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
-    assert.match(finalReport, /抓取诊断/);
+    assert.match(finalReport, /编辑精选/);
   } finally {
     await fixture.cleanup();
   }
 });
 
-test('runAnalyze writes a final-draft diagnostic artifact when the brief request fails', async () => {
+test('runAnalyze preserves a final-draft diagnostic artifact and falls back to a readable brief when the request fails', async () => {
   const fixture = await createMockSkillFixture();
   try {
     await runFetch({
@@ -427,29 +431,19 @@ test('runAnalyze writes a final-draft diagnostic artifact when the brief request
       fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
     });
 
-    let failure = null;
-    try {
-      await runAnalyze({
-        configPath: fixture.configPath,
-        date: '2026-03-23',
-        fetchImpl: async () => {
-          const networkCause = new Error('socket hang up');
-          networkCause.code = 'ECONNRESET';
-          const requestError = new TypeError('fetch failed');
-          requestError.cause = networkCause;
-          throw requestError;
-        },
-      });
-      assert.fail('Expected runAnalyze to throw when the final draft request fails');
-    } catch (error) {
-      failure = error;
-    }
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: async () => {
+        const networkCause = new Error('socket hang up');
+        networkCause.code = 'ECONNRESET';
+        const requestError = new TypeError('fetch failed');
+        requestError.cause = networkCause;
+        throw requestError;
+      },
+    });
 
-    assert.ok(failure);
-    assert.ok(failure.analyzeErrorPath);
-    assert.ok(failure.analyzeRunDir);
-
-    const analyzeError = await readJson(failure.analyzeErrorPath);
+    const analyzeError = await readJson(join(analyzeSummary.runDir, 'analyze.error.json'));
     assert.equal(analyzeError.stage, 'final_draft');
     assert.equal(analyzeError.analysisProfile, 'gpt-default');
     assert.equal(analyzeError.briefModel, 'gpt-5.4-xhigh');
@@ -466,8 +460,13 @@ test('runAnalyze writes a final-draft diagnostic artifact when the brief request
     assert.equal(analyzeError.error.continuation.completedContinuationRounds, 0);
     assert.equal(analyzeError.error.causeChain[0].code, 'ECONNRESET');
 
-    await assert.rejects(readFile(join(failure.analyzeRunDir, 'analyze.result.json'), 'utf8'), { code: 'ENOENT' });
-    await assert.rejects(readFile(join(failure.analyzeRunDir, 'final.md'), 'utf8'), { code: 'ENOENT' });
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /https:\/\/x\.com\/alice\/status\/190001/);
+
+    const finalReport = await readText(analyzeSummary.finalReportPath);
+    assert.match(finalReport, /高价值推文完整清单/);
   } finally {
     await fixture.cleanup();
   }
@@ -703,6 +702,150 @@ test('runAnalyze screens large signal sets in chunks before generating the final
     const finalPrompt = String(requests[4].messages?.[0]?.content ?? requests[4].input?.[0]?.content ?? '');
     assert.ok((finalPrompt.match(/"tweet_id":/g) ?? []).length > 4);
     assert.match(finalPrompt, /"summary_chunks":/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze keeps brief quality healthy when digest summary LLM chunks fall back locally', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    config.providers['gpt-backup'] = {
+      configSource: { fileRef: 'openclaw', jsonPath: '$.models.providers.router-gpt-backup' },
+      mapping: { baseUrl: 'baseUrl', apiKey: 'apiKey', api: 'api', models: 'models' },
+    };
+    config.models['gpt-main-mini'] = { providerRef: 'gpt-backup', modelId: 'gpt-5.4-mini' };
+    config.analysis.profiles['gpt-default'].screeningModelRef = 'gpt-main-mini';
+    config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-main-mini';
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const runDate = '2026-03-23';
+    const fetchRunDir = join(fixture.skillRoot, 'data', runDate, 'run-000001');
+    await mkdir(fetchRunDir, { recursive: true });
+
+    const baseTimeMs = Date.parse('2026-03-23T12:00:00Z');
+    const items = Array.from({ length: 50 }, (_, index) => {
+      const handleIndex = Math.floor(index / 2) + 1;
+      const handle = `account${String(handleIndex).padStart(2, '0')}`;
+      const itemSuffix = String(index + 1).padStart(2, '0');
+      return {
+        tweetId: `19${String(index + 1).padStart(4, '0')}`,
+        username: handle,
+        displayName: `Account ${handleIndex}`,
+        createdAt: new Date(baseTimeMs - (index * 60 * 1000)).toISOString(),
+        text: `${handle} shipped an agent workflow update with benchmark notes and docs https://example.com/${handle}/${itemSuffix}`,
+        originalUrl: `https://x.com/${handle}/status/19${String(index + 1).padStart(4, '0')}`,
+        batchId: 'batch-1',
+        source: { seedId: `seed-${handleIndex}` },
+      };
+    });
+    const accounts = Array.from({ length: 25 }, (_, index) => ({
+      seedId: `seed-${index + 1}`,
+      handle: `account${String(index + 1).padStart(2, '0')}`,
+      displayName: `Account ${index + 1}`,
+      userPageUrl: `https://x.com/account${String(index + 1).padStart(2, '0')}`,
+      status: 'covered',
+      tweetCount: 2,
+      notes: [],
+    }));
+    const fetchResult = {
+      meta: {
+        sourceProvider: 'grok',
+        fetchedAt: FIXTURE_REFERENCE_TIME,
+        windowStartUtc: '2026-03-22T14:21:05.770Z',
+        windowEndUtc: FIXTURE_REFERENCE_TIME,
+        sourceCsvPath: join(fixture.skillRoot, 'seed.csv'),
+        timeWindowHours: 24,
+        includeTweetTypes: ['original', 'repost', 'quote'],
+        excludePureReplies: true,
+        seedCount: 25,
+        activeSeedCount: 25,
+        dormantSeedCount: 0,
+        precheckEnabled: false,
+        precheckActiveCount: 25,
+        precheckDormantCount: 0,
+        batchSize: 25,
+        batchCount: 1,
+        executedBatchCount: 1,
+        refetchRoundCount: 0,
+        refetchedAccountCount: 0,
+        tweetCount: items.length,
+        fetchInputPath: join(fetchRunDir, 'fetch.input.json'),
+        fetchRawPath: join(fetchRunDir, 'fetch.raw.json'),
+        fetchRawCsvPath: join(fetchRunDir, 'fetch.raw.csv'),
+        fetchTweetIndexCsvPath: join(fetchRunDir, 'fetch.tweet-index.csv'),
+        parseErrorCount: 0,
+        coveredAccountCount: 25,
+        noTweetAccountCount: 0,
+        failedAccountCount: 0,
+        softFailedAccountCount: 0,
+        dormantSkippedAccountCount: 0,
+        incompleteAccountCount: 0,
+        recoveredByRefetchCount: 0,
+        stayedNoTweetAccountCount: 0,
+        stayedIncompleteAccountCount: 0,
+        stayedFailedAccountCount: 0,
+        stayedSoftFailedAccountCount: 0,
+        warningCount: 0,
+        durationMs: 1000,
+      },
+      accounts,
+      items,
+      warnings: [],
+    };
+    await writeFile(join(fetchRunDir, 'fetch.result.json'), JSON.stringify(fetchResult, null, 2));
+
+    const requests = [];
+    const analyzeFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      const prompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
+
+      if (prompt.includes('你是一位信息流筛选编辑')) {
+        const tweetIds = [...prompt.matchAll(/"tweet_id":\s*"([^"]+)"/g)].map((match) => match[1]);
+        const response = tweetIds.includes('190049')
+          ? JSON.stringify([
+            { tweet_id: '190049', handle: 'account25', priority: 3, reason: 'chunk2 重点候选。' },
+            { tweet_id: '190050', handle: 'account25', priority: 2, reason: 'chunk2 补充候选。' },
+          ])
+          : JSON.stringify([
+            { tweet_id: '190001', handle: 'account01', priority: 3, reason: '值得入选 chunk1 候选。' },
+            { tweet_id: '190002', handle: 'account01', priority: 2, reason: '同账号第二条高价值。' },
+            { tweet_id: '190003', handle: 'account02', priority: 2, reason: '方法论更新。' },
+            { tweet_id: '190004', handle: 'account02', priority: 1, reason: '补充候选。' },
+          ]);
+        return createCompletionResponse({ content: response, finishReason: 'stop' }, body);
+      }
+
+      if (prompt.includes('你是一位日报预编辑')) {
+        throw new Error('summary provider protocol mismatch');
+      }
+
+      if (prompt.startsWith('Analyze tweets for')) {
+        return createCompletionResponse({ content: FIXTURE_ANALYZE_MARKDOWN, finishReason: 'stop' }, body);
+      }
+
+      throw new Error(`Unexpected analyze prompt: ${prompt.slice(0, 60)}`);
+    };
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: runDate,
+      fetchImpl: analyzeFetch,
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.meta.candidateSelectionMode, 'chunked_llm');
+    assert.equal(analyzeResult.meta.summaryChunkCount, 2);
+    assert.equal(analyzeResult.meta.summaryFailedChunkCount, 0);
+    assert.ok(analyzeResult.meta.summaryItemCount > 0);
+    assert.equal(analyzeResult.quality.status, 'ok');
+    assert.equal(analyzeResult.quality.needsReview, false);
+
+    const finalPrompt = String(requests.at(-1)?.messages?.[0]?.content ?? requests.at(-1)?.input?.[0]?.content ?? '');
+    assert.match(finalPrompt, /"summary_chunks":\s*\[/);
+    assert.match(finalPrompt, /重点更新/);
   } finally {
     await fixture.cleanup();
   }

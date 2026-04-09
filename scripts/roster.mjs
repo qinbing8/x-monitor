@@ -174,6 +174,19 @@ async function readMasterRoster(masterCsvPath) {
   return normalizeSeedAccounts(parseCsv(csvText));
 }
 
+async function readExistingDailyRoster(dailyCsvPath) {
+  try {
+    const csvText = await readFile(dailyCsvPath, 'utf8');
+    const rows = parseCsv(csvText);
+    return {
+      csvText,
+      dailyCount: rows.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
   let rawState = { meta: {}, accounts: [] };
   try {
@@ -187,7 +200,8 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
       buildSeedLookupKeys(entry).map((key) => [key, entry])
     )),
   );
-  const fallbackPreparedDate = normalizeOptionalRunDateString(rawState.meta?.lastPreparedRunDate)
+  const lastPreparedRunDate = normalizeOptionalRunDateString(rawState.meta?.lastPreparedRunDate);
+  const fallbackPreparedDate = lastPreparedRunDate
     ?? normalizeOptionalRunDateString(rawState.meta?.lastScoredRunDate)
     ?? null;
 
@@ -217,7 +231,7 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
   return {
     meta: {
       ...(rawState.meta ?? {}),
-      lastPreparedRunDate: fallbackPreparedDate,
+      lastPreparedRunDate,
     },
     accounts,
   };
@@ -277,6 +291,24 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
   const runDate = normalizeRunDateString(date);
   const masterSeeds = await readMasterRoster(rosterConfig.masterCsvPath);
   const scoreState = await readScoreState(rosterConfig.scoreFilePath, masterSeeds, rosterConfig);
+  if (scoreState.meta?.lastPreparedRunDate === runDate) {
+    const existingDailyRoster = await readExistingDailyRoster(rosterConfig.dailyCsvPath);
+    if (existingDailyRoster && existingDailyRoster.dailyCount > 0) {
+      logger?.info('roster_daily_reused', {
+        runDate,
+        masterCount: masterSeeds.length,
+        dailyCount: existingDailyRoster.dailyCount,
+        dailyCsvPath: rosterConfig.dailyCsvPath,
+      });
+      return {
+        runDate,
+        masterCount: masterSeeds.length,
+        dailyCount: existingDailyRoster.dailyCount,
+        dailyCsvPath: rosterConfig.dailyCsvPath,
+        scoreFilePath: rosterConfig.scoreFilePath,
+      };
+    }
+  }
   const dailyRows = selectDailyRosterEntries(scoreState.accounts, runDate, rosterConfig);
   const csvText = serializeDailyRosterCsv(dailyRows);
 
@@ -445,6 +477,8 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
         baseUrl: profile.provider.baseUrl,
         apiKey: profile.provider.apiKey,
         apiProtocol: profile.provider.api ?? profile.apiProtocol,
+        extraHeaders: profile.provider.headers,
+        authHeader: profile.provider.authHeader,
         model: profile.modelId,
         timeoutMs: profile.timeoutMs,
         temperature: profile.temperature,
