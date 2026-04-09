@@ -1,0 +1,14 @@
+name: workflow-probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo probe marker
+        run: echo "workflow probe ok"

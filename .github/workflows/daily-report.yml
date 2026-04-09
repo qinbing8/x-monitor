@@ -1,4 +1,5 @@
 name: daily-report
+# Touch this workflow to force GitHub to refresh workflow registration.
 
 on:
   schedule:
