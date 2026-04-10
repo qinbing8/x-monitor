@@ -421,6 +421,53 @@ test('runAnalyze writes a readable structured fallback brief when the GPT brief 
   }
 });
 
+test('runAnalyze falls back when the GPT brief is structurally weak despite being non-empty', async () => {
+  const fixture = await createMockSkillFixture();
+  const weakMarkdown = [
+    '# X 日报 | 2026-03-23',
+    '',
+    '## 今日摘要',
+    '',
+    '## 高价值推文',
+    '',
+    '`@alice`',
+    '',
+    '链接：<https://x.com/alice/status/190001>',
+    '',
+    '`@alice`',
+    '',
+    '链接：<https://x.com/alice/status/190002>',
+    '',
+    '## 覆盖与风险',
+    '',
+    '`@bob`',
+  ].join('\n');
+
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(weakMarkdown),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /编辑精选/);
+    assert.match(analyzeResult.answer.markdown, /高价值推文完整清单/);
+    assert.match(analyzeResult.answer.markdown, /Shipped a new CLI for tracing agent runs/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runAnalyze preserves a final-draft diagnostic artifact and falls back to a readable brief when the request fails', async () => {
   const fixture = await createMockSkillFixture();
   try {

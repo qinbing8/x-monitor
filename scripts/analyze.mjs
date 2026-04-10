@@ -31,6 +31,7 @@ const MAX_DIGEST_SUMMARY_OUTPUT_TOKENS = 900;
 const MAX_DIGEST_SUMMARY_HEADLINE_CHARS = 80;
 const MAX_DIGEST_SUMMARY_TEXT_CHARS = 160;
 const MAX_DIGEST_SUMMARY_ITEMS = 4;
+const MIN_SUBSTANTIVE_BRIEF_LINES = 3;
 
 const NOISE_PATTERNS = [
   /^test\b/i,
@@ -1116,7 +1117,19 @@ async function finalizeAnalyzeRun({
   const outputText = continuationResult.text.trim();
   let answerSource = 'model';
   let finalMarkdown = injectQualityBanner(outputText, quality);
-  if (!finalMarkdown) {
+  const substantiveLineCount = finalMarkdown ? countSubstantiveBriefLines(finalMarkdown) : 0;
+  const weakModelBrief = finalMarkdown
+    ? (!continuationResult.truncated && isStructurallyWeakBrief(finalMarkdown))
+    : false;
+  if (weakModelBrief) {
+    logger.warn('analyze_final_draft_weak', {
+      runDate,
+      analysisProfile: profile.name,
+      model: profile.modelId,
+      substantiveLineCount,
+    });
+  }
+  if (!finalMarkdown || weakModelBrief) {
     answerSource = 'fallback';
     finalMarkdown = injectQualityBanner(buildFallbackDailyBrief({
       runDate,
@@ -1127,7 +1140,9 @@ async function finalizeAnalyzeRun({
       signalTweetCount: signalItems.length,
       digestItems,
       chunkSummaries,
-      failureSummary,
+      failureSummary: failureSummary ?? (weakModelBrief
+        ? '> 终稿模型返回了结构过弱的正文，以下内容基于已完成的抓取、筛选与摘要结果自动整理。'
+        : null),
     }), quality);
   }
   const analyzeDurationMs = Date.now() - startedAt;
@@ -1466,6 +1481,28 @@ export function injectQualityBanner(markdown, quality) {
     return [lines[0], '', banner, ...lines.slice(1)].join('\n').replace(/\n{3,}/g, '\n\n');
   }
   return `${banner}\n\n${text}`;
+}
+
+function countSubstantiveBriefLines(markdown) {
+  return String(markdown ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('#') && !line.startsWith('>'))
+    .map((line) => line.replace(/^[-*]\s*/, ''))
+    .map((line) => line.replace(/^\d+\.\s*/, ''))
+    .map((line) => line.replace(/`@?[^`]+`/g, ' '))
+    .map((line) => line.replace(/<https?:\/\/[^>]+>/gi, ' '))
+    .map((line) => line.replace(/https?:\/\/\S+/gi, ' '))
+    .map((line) => line.replace(/(?:链接|link)\s*[:：]\s*/gi, ' '))
+    .map((line) => line.replace(/@[A-Za-z0-9_]{1,15}/g, ' '))
+    .map((line) => line.replace(/[★☆`*_#[\]()<>{}|]/g, ' '))
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => line.length >= 8)
+    .length;
+}
+
+function isStructurallyWeakBrief(markdown) {
+  return countSubstantiveBriefLines(markdown) < MIN_SUBSTANTIVE_BRIEF_LINES;
 }
 
 function buildCoverageProblemEntries(accounts, status) {
