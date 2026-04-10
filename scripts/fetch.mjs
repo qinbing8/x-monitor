@@ -931,6 +931,22 @@ function orderSeedsForRefetch(seeds, outcomesBySeedId) {
   });
 }
 
+function latestSeedAttempt(seedAttempts, seedId) {
+  const attempts = seedAttempts.get(seedId);
+  return Array.isArray(attempts) && attempts.length > 0 ? attempts.at(-1) : null;
+}
+
+function shouldForceSingleSeedRefetch(attempt) {
+  if (!attempt?.parseError) return false;
+  if (/timed out/i.test(attempt.parseError)) return true;
+  return attempt.responseClassification === 'empty_response';
+}
+
+function resolveRefetchRoundBatchSize(orderedSeeds, seedAttempts, refetchConfig) {
+  const shouldSplit = orderedSeeds.some((seed) => shouldForceSingleSeedRefetch(latestSeedAttempt(seedAttempts, seed.seedId)));
+  return shouldSplit ? 1 : refetchConfig.batchSize;
+}
+
 async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchImpl, referenceTime, concurrency, attemptKind = 'initial', round = 0, batchIdBuilder, logger } = {}) {
   const batchResults = [];
   const startedAt = Date.now();
@@ -1004,6 +1020,10 @@ function recordSeedAttempts(seedAttempts, seedById, batchResults) {
 }
 
 function summarizeSeedAttempts(seed, attempts) {
+  const latestSuccessfulAttemptIndex = attempts.findLastIndex((attempt) => attempt.items.length > 0);
+  const attemptsForStatus = latestSuccessfulAttemptIndex >= 0
+    ? attempts.slice(latestSuccessfulAttemptIndex)
+    : attempts;
   const uniqueItems = uniqueByKey(
     attempts.flatMap((attempt) => attempt.items),
     (item) => item.tweetId,
@@ -1013,13 +1033,13 @@ function summarizeSeedAttempts(seed, attempts) {
     (issue) => `${issue.batchId}|${issue.rowNumber}|${issue.seedId ?? ''}|${issue.reason}`,
   );
   const parseErrors = uniqueByKey(
-    attempts.filter((attempt) => attempt.parseError).map((attempt) => ({ batchId: attempt.batchId, message: attempt.parseError })),
+    attemptsForStatus.filter((attempt) => attempt.parseError).map((attempt) => ({ batchId: attempt.batchId, message: attempt.parseError })),
     (entry) => `${entry.batchId}|${entry.message}`,
   );
   const latestBatchId = attempts.at(-1)?.batchId ?? null;
-  const allAttemptsFailed = attempts.length > 0 && attempts.every((attempt) => attempt.parseError);
+  const allAttemptsFailed = latestSuccessfulAttemptIndex < 0 && attempts.length > 0 && attempts.every((attempt) => attempt.parseError);
   const softFailClassifications = new Set(['header_only', 'header_with_narrative', 'narrative_only', 'empty_response', 'unstructured']);
-  const hasSoftFailClassification = attempts.some((attempt) => attempt.responseClassification && softFailClassifications.has(attempt.responseClassification));
+  const hasSoftFailClassification = attemptsForStatus.some((attempt) => attempt.responseClassification && softFailClassifications.has(attempt.responseClassification));
   const issueNotes = uniqueRowIssues.map((issue) => `CSV row ${issue.rowNumber}: ${issue.reason}`);
   const { blockingIssues } = splitRowIssues(uniqueRowIssues);
   const blockingIssueNotes = blockingIssues.map((issue) => `CSV row ${issue.rowNumber}: ${issue.reason}`);
@@ -1515,17 +1535,18 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       if (seedsToRefetch.length === 0) break;
 
       const orderedSeeds = orderSeedsForRefetch(seedsToRefetch, outcomesBySeedId);
+      const refetchBatchSize = resolveRefetchRoundBatchSize(orderedSeeds, seedAttempts, refetchConfig);
       refetchRoundCount = round;
       for (const seed of orderedSeeds) refetchedSeedIds.add(seed.seedId);
       const roundStartedAt = Date.now();
       logger.info('fetch_refetch_round_start', {
         round,
         seedCount: orderedSeeds.length,
-        batchSize: refetchConfig.batchSize,
+        batchSize: refetchBatchSize,
         concurrency: refetchConfig.concurrency,
       });
 
-      const refetchBatches = chunkArray(orderedSeeds, refetchConfig.batchSize);
+      const refetchBatches = chunkArray(orderedSeeds, refetchBatchSize);
       const refetchResults = await executeSeedBatches({
         seedBatches: refetchBatches,
         promptTemplate,

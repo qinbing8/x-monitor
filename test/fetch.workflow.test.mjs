@@ -231,6 +231,72 @@ test('runFetch preserves refetch timeout diagnostics even when accounts remain n
   }
 });
 
+test('runFetch splits timeout-soft-failed batches into single-seed refetches', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    Object.assign(config.fetch.profiles['grok-default'], {
+      batchSize: 3,
+      refetchOnStatuses: ['soft_failed', 'fetch_failed'],
+      refetchMaxRounds: 1,
+      refetchBatchSize: 3,
+      refetchConcurrency: 1,
+      retry: { maxAttempts: 1, backoffMs: 0 },
+    });
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const seedCsv = [
+      '\uFEFFTweetID,Handle,Name,Bio,CanDM,AccountCreateDate,Location,FollowersCount,FollowingCount,TotalFavouritesByUser,MediaCount,UserPageURL,ProfileBannerURL,ProfileURL,AvatarURL,PostCount,Verified,IsBlueVerified',
+      '"1599634054919245824","alice","Alice Maker","Builds tools","false","2022/12/5 13:17:41","Shanghai","3","156","106","0","https://x.com/alice","","https://example.com/alice","https://cdn.example/alice.png","12","false","false"',
+      '"1439790545048457225","bob","Bob Chen","Just fun","false","2021/9/20 11:16:41","","0","38","5","0","https://x.com/bob","","","https://cdn.example/bob.png","1","false","false"',
+      '"1555555555555555555","charlie","Charlie Ops","Ships infra","false","2020/5/20 11:16:41","","10","12","9","0","https://x.com/charlie","","","https://cdn.example/charlie.png","4","false","false"',
+    ].join('\n');
+    await writeFile(`${fixture.skillRoot}\\seed.csv`, seedCsv, 'utf8');
+
+    let callIndex = 0;
+    const requestBatches = [];
+    const result = await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: async (_url, options) => {
+        const body = JSON.parse(options?.body ?? '{}');
+        const prompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
+        const handles = extractPromptHandles(prompt);
+        requestBatches.push(handles);
+        callIndex += 1;
+
+        if (callIndex === 1) {
+          throw new Error('Request timed out after 5000ms');
+        }
+
+        const recoveredCsv = [
+          'username,tweet_id,created_at,text,original_url',
+          ...handles.map((handle, index) => {
+            const tweetId = handle === 'alice'
+              ? '190201'
+              : handle === 'bob'
+                ? '190202'
+                : `19020${index + 3}`;
+            return `"${handle}","${tweetId}","2026-03-23T03:00:00Z","${handle} recovered during single-seed refetch.","https://x.com/${handle}/status/${tweetId}"`;
+          }),
+        ].join('\n');
+        return createCompletionFetchSequence([recoveredCsv])(null, { body: JSON.stringify(body) });
+      },
+    });
+
+    const fetchResult = await readJson(result.fetchResultPath);
+    assert.equal(fetchResult.meta.recoveredByRefetchCount, 3);
+    assert.deepEqual(fetchResult.accounts.map((account) => account.status), ['covered', 'covered', 'covered']);
+    assert.deepEqual(requestBatches[0], ['alice', 'bob', 'charlie']);
+    assert.equal(requestBatches.length, 4);
+    assert.ok(requestBatches.slice(1).every((batch) => batch.length === 1));
+    assert.deepEqual(requestBatches.slice(1).flat().sort(), ['alice', 'bob', 'charlie']);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runFetch records unresolved incomplete and failed accounts after refetch', async () => {
   const fixture = await createMockSkillFixture();
   try {
