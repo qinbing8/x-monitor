@@ -54,12 +54,73 @@ jobs:
         shell: bash
         run: |
           mkdir -p .tmp/github-actions
+          GROK_RUNTIME_MODEL="$(node --input-type=module - <<'EOF'
+          const fallbackModel = 'grok-4.1-fast';
+          const requestedModel = String(process.env.GROK_MODEL ?? '').trim();
+          const apiKey = String(process.env.GROK_API_KEY ?? '').trim();
+          const rawBaseUrl = String(process.env.GROK_BASE_URL ?? '').trim();
+
+          function normalizeBaseUrl(value) {
+            const trimmed = String(value ?? '').trim().replace(/\/+$/, '');
+            if (!trimmed) return '';
+            return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+          }
+
+          function unique(values) {
+            return [...new Set(values.filter(Boolean))];
+          }
+
+          async function resolveGrokModel() {
+            const preferredModels = unique([
+              requestedModel,
+              fallbackModel,
+              'grok-4-fast',
+              'grok-2-latest',
+            ]);
+            const baseUrl = normalizeBaseUrl(rawBaseUrl);
+            if (!baseUrl || !apiKey) {
+              console.error(`Grok model probe skipped; using ${requestedModel || fallbackModel}.`);
+              return requestedModel || fallbackModel;
+            }
+
+            try {
+              const response = await fetch(`${baseUrl}/models`, {
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                },
+              });
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+              const payload = await response.json();
+              const availableModels = unique(
+                Array.isArray(payload?.data)
+                  ? payload.data.map((entry) => String(entry?.id ?? '').trim())
+                  : [],
+              );
+              const chosenModel = preferredModels.find((model) => availableModels.includes(model))
+                ?? availableModels.find((model) => /grok/i.test(model))
+                ?? requestedModel
+                ?? fallbackModel;
+              console.error(`Resolved Grok model: requested=${requestedModel || '(empty)'} chosen=${chosenModel} availableCount=${availableModels.length}`);
+              return chosenModel;
+            } catch (error) {
+              console.error(`Grok model probe failed; using ${requestedModel || fallbackModel}. ${error?.message ?? error}`);
+              return requestedModel || fallbackModel;
+            }
+          }
+
+          process.stdout.write(await resolveGrokModel());
+          EOF
+          )"
+          echo "Using GROK_RUNTIME_MODEL=${GROK_RUNTIME_MODEL}"
+
           cat > .tmp/github-actions/search.json <<EOF
           {
             "grok": {
               "apiUrl": "${GROK_BASE_URL}",
               "apiKey": "${GROK_API_KEY}",
-              "model": "${GROK_MODEL}"
+              "model": "${GROK_RUNTIME_MODEL}"
             }
           }
           EOF
