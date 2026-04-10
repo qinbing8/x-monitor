@@ -23,6 +23,7 @@ function withRosterConfig(config) {
       masterCsvPath: './seed.csv',
       dailyCsvPath: './daily.csv',
       scoreFilePath: './account-score.json',
+      dormantCooldownDays: 7,
       scoring: {
         enabled: true,
         promptFile: './assets/prompts/gpt-roster-score.txt',
@@ -43,24 +44,19 @@ function withRosterConfig(config) {
   };
 }
 
-test('prepareDailyRoster reuses the same-day roster instead of shrinking to a fallback entry', async () => {
+test('prepareDailyRoster rebuilds the same-day roster from score state without relying on persisted daily csv', async () => {
   const fixture = await createMockSkillFixture();
   try {
     const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
     await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
 
-    const existingDailyCsv = [
-      'TweetID,UserPageURL,Handle,Name,PostCount',
-      '"1599634054919245824","https://x.com/alice","alice","Alice Maker","12"',
-      '"1439790545048457225","https://x.com/bob","bob","Bob Chen","0"',
-    ].join('\n');
-    await writeFile(`${fixture.skillRoot}\\daily.csv`, existingDailyCsv, 'utf8');
     await writeFile(
       `${fixture.skillRoot}\\account-score.json`,
       JSON.stringify({
         meta: {
           lastPreparedRunDate: '2026-03-24',
           dailyCount: 2,
+          preparedSelectionKeys: ['handle:alice', 'handle:bob'],
         },
         accounts: [
           {
@@ -110,12 +106,15 @@ test('prepareDailyRoster reuses the same-day roster instead of shrinking to a fa
     });
 
     assert.equal(summary.dailyCount, 2);
-    assert.equal(await readText(summary.dailyCsvPath), existingDailyCsv);
+    const dailyCsv = await readText(summary.dailyCsvPath);
+    assert.match(dailyCsv, /"alice"/);
+    assert.match(dailyCsv, /"bob"/);
 
     const scoreState = await readJson(summary.scoreFilePath);
     const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
     const bob = scoreState.accounts.find((entry) => entry.handle === 'bob');
     assert.equal(scoreState.meta.lastPreparedRunDate, '2026-03-24');
+    assert.deepEqual(scoreState.meta.preparedSelectionKeys, ['handle:alice', 'handle:bob']);
     assert.equal(alice.selectionCount, 2);
     assert.equal(bob.selectionCount, 2);
     assert.equal(alice.lastSelectedAt, '2026-03-24');
@@ -154,8 +153,8 @@ test('prepareDailyRoster does not reuse stale daily roster when only lastScoredR
 
     const dailyCsv = await readText(summary.dailyCsvPath);
     assert.notEqual(dailyCsv, staleDailyCsv);
-    assert.match(dailyCsv, /"alice"/);
-    assert.match(dailyCsv, /"bob"/);
+    assert.match(dailyCsv, /("alice"|"bob")/);
+    assert.equal(summary.dailyCount, 1);
 
     const scoreState = await readJson(summary.scoreFilePath);
     assert.equal(scoreState.meta.lastPreparedRunDate, '2026-03-24');

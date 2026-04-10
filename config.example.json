@@ -49,6 +49,7 @@
     "masterCsvPath": "./X列表关注者.csv",
     "dailyCsvPath": "./X列表关注者.daily.csv",
     "scoreFilePath": "./account-score.json",
+    "dormantCooldownDays": 7,
     "scoring": {
       "enabled": true,
       "promptFile": "assets/prompts/gpt-roster-score.txt",

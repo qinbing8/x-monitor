@@ -145,7 +145,6 @@ jobs:
             exit 1
           fi
           aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/account-score.json" "./account-score.json" || echo "R2 state/account-score.json not found; keeping repository seed if present."
-          aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/state/X列表关注者.daily.csv" "./X列表关注者.daily.csv" || echo "R2 state/X列表关注者.daily.csv not found; keeping repository seed if present."
           aws --endpoint-url "${R2_ENDPOINT}" s3 cp "s3://${R2_BUCKET_NAME}/reports/index.json" ".tmp/github-actions/previous-index.json" || true
 
       - name: Run x-monitor pipeline
@@ -153,6 +152,16 @@ jobs:
         run: |
           mkdir -p .tmp/github-actions
           node scripts/run.mjs --mode run --config ./config.github-actions.generated.json > .tmp/github-actions/run-summary.json
+
+      - name: Print roster summary
+        shell: bash
+        run: |
+          node --input-type=module - <<'EOF'
+          import { readFileSync } from 'node:fs';
+
+          const summary = JSON.parse(readFileSync('.tmp/github-actions/run-summary.json', 'utf8'));
+          console.log(JSON.stringify(summary.roster ?? null, null, 2));
+          EOF
 
       - name: Build publishable report artifacts
         shell: bash
@@ -170,9 +179,6 @@ jobs:
           aws --endpoint-url "${R2_ENDPOINT}" s3 sync ".tmp/published/reports" "s3://${R2_BUCKET_NAME}/reports"
           aws --endpoint-url "${R2_ENDPOINT}" s3 cp "./X列表关注者.csv" "s3://${R2_BUCKET_NAME}/state/X列表关注者.csv"
           aws --endpoint-url "${R2_ENDPOINT}" s3 cp "./account-score.json" "s3://${R2_BUCKET_NAME}/state/account-score.json"
-          if [ -f "./X列表关注者.daily.csv" ]; then
-            aws --endpoint-url "${R2_ENDPOINT}" s3 cp "./X列表关注者.daily.csv" "s3://${R2_BUCKET_NAME}/state/X列表关注者.daily.csv"
-          fi
 
       - name: Prepare wrangler config
         if: github.event_name == 'workflow_dispatch'

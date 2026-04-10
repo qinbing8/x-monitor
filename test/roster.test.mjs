@@ -34,6 +34,7 @@ function withRosterConfig(config) {
       masterCsvPath: './seed.csv',
       dailyCsvPath: './daily.csv',
       scoreFilePath: './account-score.json',
+      dormantCooldownDays: 7,
       scoring: {
         enabled: true,
         promptFile: './assets/prompts/gpt-roster-score.txt',
@@ -54,7 +55,7 @@ function withRosterConfig(config) {
   };
 }
 
-test('prepareDailyRoster bootstraps a daily roster and score state from the master roster', async () => {
+test('prepareDailyRoster staggers cold-start accounts instead of selecting the full roster', async () => {
   const fixture = await createMockSkillFixture();
   try {
     const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
@@ -66,20 +67,20 @@ test('prepareDailyRoster bootstraps a daily roster and score state from the mast
     });
 
     assert.equal(summary.masterCount, 2);
-    assert.equal(summary.dailyCount, 2);
+    assert.equal(summary.dailyCount, 1);
 
     const dailyCsv = await readText(summary.dailyCsvPath);
     assert.match(dailyCsv, /TweetID,UserPageURL,Handle,Name,PostCount/);
-    assert.match(dailyCsv, /1599634054919245824/);
-    assert.match(dailyCsv, /https:\/\/x\.com\/alice/);
-    assert.match(dailyCsv, /https:\/\/x\.com\/bob/);
+    assert.match(dailyCsv, /(https:\/\/x\.com\/alice|https:\/\/x\.com\/bob)/);
 
     const scoreState = await readJson(summary.scoreFilePath);
     assert.equal(scoreState.accounts.length, 2);
-    assert.equal(scoreState.accounts[0].sourceTweetId, '1599634054919245824');
     assert.equal(scoreState.accounts[0].score, 2);
     assert.equal(scoreState.accounts[0].tier, 'every_other_day');
-    assert.equal(scoreState.accounts[0].lastSelectedAt, '2026-03-23');
+    assert.equal(scoreState.accounts[1].tier, 'every_other_day');
+    assert.equal(scoreState.meta.selectionStrategy, 'cadence_hash_v1');
+    const selectedEntries = scoreState.accounts.filter((entry) => entry.lastSelectedAt === '2026-03-23');
+    assert.equal(selectedEntries.length, 1);
   } finally {
     await fixture.cleanup();
   }
@@ -227,11 +228,127 @@ test('prepareDailyRoster heals invalid stored selection dates and still shrinks 
   }
 });
 
+test('prepareDailyRoster skips accounts whose dormant cooldown has not expired', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    await writeFile(
+      `${fixture.skillRoot}\\account-score.json`,
+      JSON.stringify({
+        meta: {},
+        accounts: [
+          {
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+            postCount: 12,
+            score: 4,
+            tier: 'daily',
+            lastEvaluatedAt: '2026-03-23T00:00:00Z',
+            lastSelectedAt: '2026-03-23',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 2,
+            lowValueChatCount: 0,
+            evaluationCount: 2,
+            selectionCount: 2,
+            reasoning: 'Useful tool updates.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1439790545048457225',
+            handle: 'bob',
+            displayName: 'Bob Chen',
+            userPageUrl: 'https://x.com/bob',
+            postCount: 0,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-03-23T00:00:00Z',
+            lastSelectedAt: '2026-03-22',
+            lastFetchStatus: 'dormant_skipped',
+            nextEligibleAt: '2026-03-30',
+            highValueHitCount: 0,
+            lowValueChatCount: 0,
+            evaluationCount: 2,
+            selectionCount: 2,
+            reasoning: 'Dormant recently.',
+            unseen: false,
+          },
+        ],
+      }, null, 2),
+    );
+
+    const summary = await prepareDailyRoster({
+      configPath: fixture.configPath,
+      date: '2026-03-24',
+    });
+
+    assert.equal(summary.dailyCount, 1);
+
+    const dailyCsv = await readText(summary.dailyCsvPath);
+    assert.match(dailyCsv, /alice/);
+    assert.doesNotMatch(dailyCsv, /bob/);
+
+    const scoreState = await readJson(summary.scoreFilePath);
+    const bob = scoreState.accounts.find((entry) => entry.handle === 'bob');
+    assert.equal(bob.lastSelectedAt, '2026-03-22');
+    assert.equal(scoreState.meta.cooldownSkippedCount, 1);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runRosterScoring updates account scores from GPT decisions without changing Grok fetch behavior', async () => {
   const fixture = await createMockSkillFixture();
   try {
     const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
     await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+    await writeFile(
+      `${fixture.skillRoot}\\account-score.json`,
+      JSON.stringify({
+        meta: {},
+        accounts: [
+          {
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+            postCount: 12,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-03-22T00:00:00Z',
+            lastSelectedAt: '2026-03-21',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 0,
+            lowValueChatCount: 0,
+            evaluationCount: 1,
+            selectionCount: 1,
+            reasoning: 'Previously useful updates.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1439790545048457225',
+            handle: 'bob',
+            displayName: 'Bob Chen',
+            userPageUrl: 'https://x.com/bob',
+            postCount: 0,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-03-22T00:00:00Z',
+            lastSelectedAt: '2026-03-22',
+            lastFetchStatus: 'no_tweets_found',
+            highValueHitCount: 0,
+            lowValueChatCount: 0,
+            evaluationCount: 1,
+            selectionCount: 1,
+            reasoning: 'No useful updates yet.',
+            unseen: false,
+          },
+        ],
+      }, null, 2),
+    );
 
     await prepareDailyRoster({
       configPath: fixture.configPath,
@@ -292,6 +409,50 @@ test('runRosterScoring lowers account frequency when GPT flags repeated low-valu
   try {
     const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
     await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+    await writeFile(
+      `${fixture.skillRoot}\\account-score.json`,
+      JSON.stringify({
+        meta: {},
+        accounts: [
+          {
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+            postCount: 12,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-03-22T00:00:00Z',
+            lastSelectedAt: '2026-03-21',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 0,
+            lowValueChatCount: 0,
+            evaluationCount: 1,
+            selectionCount: 1,
+            reasoning: 'Previously useful updates.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1439790545048457225',
+            handle: 'bob',
+            displayName: 'Bob Chen',
+            userPageUrl: 'https://x.com/bob',
+            postCount: 0,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-03-22T00:00:00Z',
+            lastSelectedAt: '2026-03-22',
+            lastFetchStatus: 'no_tweets_found',
+            highValueHitCount: 0,
+            lowValueChatCount: 0,
+            evaluationCount: 1,
+            selectionCount: 1,
+            reasoning: 'No useful updates yet.',
+            unseen: false,
+          },
+        ],
+      }, null, 2),
+    );
 
     await prepareDailyRoster({
       configPath: fixture.configPath,
@@ -333,6 +494,80 @@ test('runRosterScoring lowers account frequency when GPT flags repeated low-valu
     assert.equal(alice.score, 0);
     assert.equal(alice.tier, 'cold');
     assert.equal(alice.lowValueChatCount, 3);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runRosterScoring stores dormant cooldown metadata for dormant accounts', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const { config: loadedConfig, skillRoot } = await loadConfig(fixture.configPath);
+    const sourceDocs = await loadSourceDocuments(loadedConfig, skillRoot);
+    const profile = resolveAnalysisProfile(loadedConfig, sourceDocs, 'gpt-default');
+    const fetchResult = {
+      items: [
+        {
+          tweetId: '190001',
+          username: 'alice',
+          displayName: 'Alice Maker',
+          createdAt: '2026-03-23T01:02:03Z',
+          text: 'Shipped a new CLI for tracing agent runs.',
+          originalUrl: 'https://x.com/alice/status/190001',
+          source: {
+            seedId: 'seed-1',
+            sourceTweetId: '1599634054919245824',
+            csvRowNumber: 2,
+            seedHandle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+          },
+        },
+      ],
+      accounts: [
+        {
+          seedId: 'seed-1',
+          sourceTweetId: '1599634054919245824',
+          handle: 'alice',
+          displayName: 'Alice Maker',
+          userPageUrl: 'https://x.com/alice',
+          status: 'covered',
+          tweetCount: 1,
+          notes: [],
+        },
+        {
+          seedId: 'seed-2',
+          sourceTweetId: '1439790545048457225',
+          handle: 'bob',
+          displayName: 'Bob Chen',
+          userPageUrl: 'https://x.com/bob',
+          status: 'dormant_skipped',
+          tweetCount: 0,
+          notes: ['Dormant because no recent tweets were found.'],
+          dormantReason: 'inactive',
+          lastTweetDate: '2026-02-01T12:00:00Z',
+          daysSinceLastTweet: 50.1,
+        },
+      ],
+    };
+
+    await runRosterScoring({
+      config: loadedConfig,
+      skillRoot,
+      runDate: '2026-03-23',
+      fetchResult,
+      profile,
+      fetchImpl: createCompletionFetch('[]'),
+      runDir: join(fixture.skillRoot, 'data'),
+    });
+
+    const scoreState = await readJson(join(fixture.skillRoot, 'account-score.json'));
+    const bob = scoreState.accounts.find((entry) => entry.handle === 'bob');
+    assert.equal(bob.lastFetchStatus, 'dormant_skipped');
+    assert.equal(bob.nextEligibleAt, '2026-03-30');
   } finally {
     await fixture.cleanup();
   }

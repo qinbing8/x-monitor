@@ -16,6 +16,8 @@ const DEFAULT_TIER_INTERVALS = {
 };
 const MAX_SCORING_TWEET_TEXT_CHARS = 140;
 const MAX_ROSTER_SCORE_OUTPUT_TOKENS = 1500;
+const ROSTER_STATE_VERSION = 2;
+const ROSTER_SELECTION_STRATEGY = 'cadence_hash_v1';
 
 function normalizeNumber(value, fallback) {
   const parsed = Number(value);
@@ -84,6 +86,18 @@ function daysBetweenDates(leftDate, rightDate) {
   return Math.floor((leftMs - rightMs) / DAY_MS);
 }
 
+function addDaysToRunDate(runDate, dayCount) {
+  const baseMs = Date.parse(`${normalizeRunDateString(runDate)}T00:00:00Z`);
+  if (!Number.isFinite(baseMs)) throw new Error(`Invalid runDate: ${runDate}`);
+  return new Date(baseMs + (Math.max(0, Number(dayCount) || 0) * DAY_MS)).toISOString().slice(0, 10);
+}
+
+function runDateDayIndex(runDate) {
+  const runMs = Date.parse(`${normalizeRunDateString(runDate)}T00:00:00Z`);
+  if (!Number.isFinite(runMs)) return 0;
+  return Math.floor(runMs / DAY_MS);
+}
+
 function buildSeedLookupKeys(seed) {
   const keys = [];
   const sourceTweetId = String(seed.sourceTweetId ?? '').trim();
@@ -93,6 +107,60 @@ function buildSeedLookupKeys(seed) {
   const userPageUrl = String(seed.userPageUrl ?? '').trim().toLowerCase();
   if (userPageUrl) keys.push(`url:${userPageUrl}`);
   return keys;
+}
+
+function buildAccountStateKey(seed) {
+  const handle = String(seed?.handle ?? '').trim().toLowerCase();
+  if (handle) return `handle:${handle}`;
+  const userPageUrl = String(seed?.userPageUrl ?? '').trim().toLowerCase();
+  if (userPageUrl) return `url:${userPageUrl}`;
+  const sourceTweetId = String(seed?.sourceTweetId ?? '').trim();
+  return sourceTweetId ? `tweet:${sourceTweetId}` : null;
+}
+
+function normalizeSelectionKeys(value) {
+  const normalized = Array.isArray(value)
+    ? value.map((item) => String(item ?? '').trim()).filter(Boolean)
+    : [];
+  return [...new Set(normalized)];
+}
+
+function buildDailyRosterRow(entry) {
+  return {
+    TweetID: entry.sourceTweetId || '',
+    UserPageURL: entry.userPageUrl,
+    Handle: entry.handle,
+    Name: entry.displayName,
+    PostCount: entry.postCount ?? '',
+  };
+}
+
+function stableBucketForKey(key, modulo) {
+  const bucketModulo = Math.max(1, Number(modulo) || 1);
+  let sum = 0;
+  for (const char of String(key ?? '')) {
+    sum += char.charCodeAt(0);
+  }
+  return sum % bucketModulo;
+}
+
+function shouldSelectColdStartEntry(entry, runDate, rosterConfig) {
+  const intervalDays = cadenceDaysForTier(entry.tier, rosterConfig);
+  if (intervalDays <= 1) return true;
+  const accountKey = entry.accountKey ?? buildAccountStateKey(entry) ?? String(entry.displayName ?? '');
+  return stableBucketForKey(accountKey, intervalDays) === Math.abs(runDateDayIndex(runDate)) % intervalDays;
+}
+
+function isDormantCooldownActive(entry, runDate) {
+  const nextEligibleAt = normalizeOptionalRunDateString(entry?.nextEligibleAt);
+  if (!nextEligibleAt) return false;
+  return daysBetweenDates(runDate, nextEligibleAt) < 0;
+}
+
+function resolvePreparedSelectionEntries(accounts, preparedSelectionKeys) {
+  const keySet = new Set(normalizeSelectionKeys(preparedSelectionKeys));
+  if (keySet.size === 0) return [];
+  return accounts.filter((entry) => entry.accountKey && keySet.has(entry.accountKey));
 }
 
 function extractJsonPayload(text) {
@@ -146,6 +214,7 @@ function resolveRosterConfig(config, skillRoot) {
     masterCsvPath: resolveMaybeRelative(skillRoot, roster.masterCsvPath ?? './X列表关注者.csv'),
     dailyCsvPath: resolveMaybeRelative(skillRoot, roster.dailyCsvPath ?? './X列表关注者.daily.csv'),
     scoreFilePath: resolveMaybeRelative(skillRoot, roster.scoreFilePath ?? './account-score.json'),
+    dormantCooldownDays: Math.max(1, normalizeNumber(roster.dormantCooldownDays, 7)),
     scoringEnabled: scoring.enabled === true,
     promptFile: resolveMaybeRelative(skillRoot, scoring.promptFile ?? 'assets/prompts/gpt-roster-score.txt'),
     batchSize: Math.max(1, normalizeNumber(scoring.batchSize, 20)),
@@ -204,11 +273,13 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
   const fallbackPreparedDate = lastPreparedRunDate
     ?? normalizeOptionalRunDateString(rawState.meta?.lastScoredRunDate)
     ?? null;
+  const preparedSelectionKeys = normalizeSelectionKeys(rawState.meta?.preparedSelectionKeys);
 
   const accounts = masterSeeds.map((seed) => {
     const existing = buildSeedLookupKeys(seed).map((key) => existingByKey.get(key)).find(Boolean);
     const score = clampScore(normalizeNumber(existing?.score, rosterConfig.defaultScore), rosterConfig);
     return {
+      accountKey: buildAccountStateKey(seed) ?? buildAccountStateKey(existing),
       sourceTweetId: seed.sourceTweetId || existing?.sourceTweetId || '',
       handle: seed.handle,
       displayName: seed.displayName,
@@ -225,13 +296,16 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
       selectionCount: normalizeNumber(existing?.selectionCount, 0),
       reasoning: existing?.reasoning ?? '',
       unseen: existing?.unseen ?? true,
+      nextEligibleAt: normalizeOptionalRunDateString(existing?.nextEligibleAt),
     };
   });
 
   return {
     meta: {
       ...(rawState.meta ?? {}),
+      stateVersion: Math.max(1, normalizeNumber(rawState.meta?.stateVersion, 1)),
       lastPreparedRunDate,
+      preparedSelectionKeys,
     },
     accounts,
   };
@@ -256,31 +330,43 @@ function pickFallbackEntries(accounts, runDate, rosterConfig) {
 
 function selectDailyRosterEntries(accounts, runDate, rosterConfig) {
   const selected = [];
+  const eligibleAccounts = [];
+  let cooldownSkippedCount = 0;
+  let coldStartSelectedCount = 0;
 
   for (const entry of accounts) {
-    if (entry.unseen) {
-      selected.push(entry);
+    if (isDormantCooldownActive(entry, runDate)) {
+      cooldownSkippedCount += 1;
+      continue;
+    }
+    eligibleAccounts.push(entry);
+    if (!entry.lastSelectedAt) {
+      if (shouldSelectColdStartEntry(entry, runDate, rosterConfig)) {
+        selected.push(entry);
+        coldStartSelectedCount += 1;
+      }
       continue;
     }
     const intervalDays = cadenceDaysForTier(entry.tier, rosterConfig);
-    if (!entry.lastSelectedAt || daysBetweenDates(runDate, entry.lastSelectedAt) >= intervalDays) {
+    if (daysBetweenDates(runDate, entry.lastSelectedAt) >= intervalDays) {
       selected.push(entry);
     }
   }
 
-  const effectiveSelection = selected.length > 0 ? selected : pickFallbackEntries(accounts, runDate, rosterConfig);
+  const effectiveSelection = selected.length > 0 ? selected : pickFallbackEntries(eligibleAccounts, runDate, rosterConfig);
+  const preparedSelectionKeys = [];
   for (const entry of effectiveSelection) {
     entry.lastSelectedAt = runDate;
     entry.selectionCount += 1;
+    if (entry.accountKey) preparedSelectionKeys.push(entry.accountKey);
   }
 
-  return effectiveSelection.map((entry) => ({
-    TweetID: entry.sourceTweetId || '',
-    UserPageURL: entry.userPageUrl,
-    Handle: entry.handle,
-    Name: entry.displayName,
-    PostCount: entry.postCount ?? '',
-  }));
+  return {
+    rows: effectiveSelection.map(buildDailyRosterRow),
+    preparedSelectionKeys: normalizeSelectionKeys(preparedSelectionKeys),
+    cooldownSkippedCount,
+    coldStartSelectedCount,
+  };
 }
 
 export async function prepareDailyRoster({ configPath, date, logger } = {}) {
@@ -292,6 +378,30 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
   const masterSeeds = await readMasterRoster(rosterConfig.masterCsvPath);
   const scoreState = await readScoreState(rosterConfig.scoreFilePath, masterSeeds, rosterConfig);
   if (scoreState.meta?.lastPreparedRunDate === runDate) {
+    const preparedEntries = resolvePreparedSelectionEntries(scoreState.accounts, scoreState.meta?.preparedSelectionKeys);
+    if (preparedEntries.length > 0) {
+      const dailyRows = preparedEntries.map(buildDailyRosterRow);
+      const csvText = serializeDailyRosterCsv(dailyRows);
+      await ensureParentDir(rosterConfig.dailyCsvPath);
+      await writeFile(rosterConfig.dailyCsvPath, csvText, 'utf8');
+      logger?.info('roster_daily_reused', {
+        runDate,
+        masterCount: masterSeeds.length,
+        dailyCount: dailyRows.length,
+        dailyCsvPath: rosterConfig.dailyCsvPath,
+        reuseSource: 'score_state',
+      });
+      return {
+        runDate,
+        masterCount: masterSeeds.length,
+        dailyCount: dailyRows.length,
+        dailyCsvPath: rosterConfig.dailyCsvPath,
+        scoreFilePath: rosterConfig.scoreFilePath,
+        selectionStrategy: scoreState.meta?.selectionStrategy ?? ROSTER_SELECTION_STRATEGY,
+        cooldownSkippedCount: scoreState.meta?.cooldownSkippedCount ?? 0,
+        reusedFrom: 'score_state',
+      };
+    }
     const existingDailyRoster = await readExistingDailyRoster(rosterConfig.dailyCsvPath);
     if (existingDailyRoster && existingDailyRoster.dailyCount > 0) {
       logger?.info('roster_daily_reused', {
@@ -299,6 +409,7 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
         masterCount: masterSeeds.length,
         dailyCount: existingDailyRoster.dailyCount,
         dailyCsvPath: rosterConfig.dailyCsvPath,
+        reuseSource: 'legacy_daily_csv',
       });
       return {
         runDate,
@@ -306,10 +417,12 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
         dailyCount: existingDailyRoster.dailyCount,
         dailyCsvPath: rosterConfig.dailyCsvPath,
         scoreFilePath: rosterConfig.scoreFilePath,
+        reusedFrom: 'legacy_daily_csv',
       };
     }
   }
-  const dailyRows = selectDailyRosterEntries(scoreState.accounts, runDate, rosterConfig);
+  const selection = selectDailyRosterEntries(scoreState.accounts, runDate, rosterConfig);
+  const dailyRows = selection.rows;
   const csvText = serializeDailyRosterCsv(dailyRows);
 
   await ensureParentDir(rosterConfig.dailyCsvPath);
@@ -317,10 +430,15 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
 
   scoreState.meta = {
     ...(scoreState.meta ?? {}),
+    stateVersion: ROSTER_STATE_VERSION,
     rosterEnabled: true,
     lastPreparedRunDate: runDate,
     masterCount: masterSeeds.length,
     dailyCount: dailyRows.length,
+    selectionStrategy: ROSTER_SELECTION_STRATEGY,
+    preparedSelectionKeys: selection.preparedSelectionKeys,
+    cooldownSkippedCount: selection.cooldownSkippedCount,
+    coldStartSelectedCount: selection.coldStartSelectedCount,
     updatedAt: new Date().toISOString(),
   };
   await writeScoreState(rosterConfig.scoreFilePath, scoreState);
@@ -330,6 +448,9 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
     masterCount: masterSeeds.length,
     dailyCount: dailyRows.length,
     dailyCsvPath: rosterConfig.dailyCsvPath,
+    selectionStrategy: ROSTER_SELECTION_STRATEGY,
+    cooldownSkippedCount: selection.cooldownSkippedCount,
+    coldStartSelectedCount: selection.coldStartSelectedCount,
   });
 
   return {
@@ -338,6 +459,9 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
     dailyCount: dailyRows.length,
     dailyCsvPath: rosterConfig.dailyCsvPath,
     scoreFilePath: rosterConfig.scoreFilePath,
+    selectionStrategy: ROSTER_SELECTION_STRATEGY,
+    cooldownSkippedCount: selection.cooldownSkippedCount,
+    coldStartSelectedCount: selection.coldStartSelectedCount,
   };
 }
 
@@ -400,6 +524,7 @@ function applyScoringDecisions(scoreState, fetchResult, decisions, runDate, rost
     scoreState.accounts.flatMap((entry) => buildSeedLookupKeys(entry).map((key) => [key, entry])),
   );
   const evaluatedAt = `${runDate}T00:00:00Z`;
+  const nextEligibleAtForDormant = addDaysToRunDate(runDate, rosterConfig.dormantCooldownDays);
 
   for (const account of Array.isArray(fetchResult?.accounts) ? fetchResult.accounts : []) {
     const entry = buildSeedLookupKeys(account).map((key) => accountsByKey.get(key)).find(Boolean);
@@ -410,6 +535,7 @@ function applyScoringDecisions(scoreState, fetchResult, decisions, runDate, rost
     entry.lastFetchStatus = account.status;
     entry.evaluationCount += 1;
     entry.unseen = false;
+    entry.nextEligibleAt = account.status === 'dormant_skipped' ? nextEligibleAtForDormant : null;
 
     if (decision) {
       const delta = (decision.highValueTweetCount > 0 ? 2 : 0) - decision.lowValueChatCount;
