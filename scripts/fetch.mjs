@@ -303,14 +303,16 @@ function serializeCsv(records, headers = REQUIRED_TWEET_FIELDS) {
 }
 
 function buildPromptSeedRecords(seeds) {
-  return seeds.map((seed) => ({
-    seed_id: seed.seedId,
-    source_tweet_id: seed.sourceTweetId || null,
-    handle: seed.handle || null,
-    display_name: seed.displayName || null,
-    user_page_url: seed.userPageUrl || null,
-    bio: seed.bio || null,
-  }));
+  return seeds.map((seed) => {
+    const record = {
+      handle: seed.handle || null,
+      user_page_url: seed.userPageUrl || null,
+    };
+    if (!record.handle && seed.displayName) {
+      record.display_name = seed.displayName;
+    }
+    return record;
+  });
 }
 
 function normalizeTweetUrl(value, username, tweetId) {

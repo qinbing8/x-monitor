@@ -1,0 +1,24 @@
+你可以访问 X/Twitter 的实时数据。请按以下要求执行抓取。
+
+## 任务
+在指定 UTC 时间窗口内，查询下面账号发布的推文，并输出 CSV。
+账号列表：
+{{SEED_BATCH_JSON}}
+
+## 硬性约束
+- 只保留 `created_at` 严格落在 `{{WINDOW_START_UTC}}` 到 `{{WINDOW_END_UTC}}` 之间的推文
+- 包含：{{INCLUDE_TWEET_TYPES}}
+- 排除：{{EXCLUDE_RULES}}
+- 排除置顶推文，除非其发布时间确实落在窗口内
+- 如果某个账号在窗口内没有符合条件的推文，不要编造任何行
+
+## 输出要求
+- 只输出 CSV 纯文本，不要解释，不要 Markdown，不要代码围栏
+- 首行必须是：
+username,tweet_id,created_at,text,original_url
+- 五个字段都必须用双引号包裹
+- `created_at` 必须是 UTC ISO 8601 格式，带 `Z`
+- `text` 内的真实换行替换为字面量 `\n`
+- `text` 内的双引号转义为两个双引号 `""`
+
+如果所有账号都没有符合条件的推文，只输出表头行。

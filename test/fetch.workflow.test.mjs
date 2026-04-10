@@ -72,6 +72,31 @@ test('runFetch refetches no_tweets_found accounts in a second pass and keeps imp
   }
 });
 
+test('runFetch keeps fetch prompts focused on handle and profile url only', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    let capturedPrompt = '';
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: async (_url, options) => {
+        const body = JSON.parse(options?.body ?? '{}');
+        capturedPrompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
+        return createCompletionFetch('username,tweet_id,created_at,text,original_url\n')(null, { body: JSON.stringify(body) });
+      },
+    });
+
+    assert.match(capturedPrompt, /"handle"\s*:\s*"alice"/);
+    assert.match(capturedPrompt, /"user_page_url"\s*:\s*"https:\/\/x\.com\/alice"/);
+    assert.doesNotMatch(capturedPrompt, /"bio"\s*:/);
+    assert.doesNotMatch(capturedPrompt, /"seed_id"\s*:/);
+    assert.doesNotMatch(capturedPrompt, /"source_tweet_id"\s*:/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runFetch smoke shows how refetchBatchSize=2 and =3 split the same three-account retry set', async () => {
   async function runScenario(refetchBatchSize) {
     const fixture = await createMockSkillFixture();

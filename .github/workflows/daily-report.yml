@@ -174,13 +174,18 @@ jobs:
           config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-roster';
           const fetchProfile = config.fetch?.profiles?.['grok-default'];
           if (fetchProfile) {
-            // Use conservative live settings in GitHub Actions to avoid provider-side rate limiting,
-            // but keep timeout recovery bounded so a single bad batch does not consume the whole run.
+            // Use a slower but more resilient live profile in GitHub Actions.
+            // The upstream Grok-compatible host has been timing out on multi-account fetches,
+            // so keep each request narrow and give the provider enough time to finish once.
+            fetchProfile.timeoutMs = 120000;
+            fetchProfile.maxOutputTokens = 1600;
+            fetchProfile.batchSize = 1;
             fetchProfile.concurrency = 1;
+            fetchProfile.promptFile = 'assets/prompts/grok-fetch-live.txt';
             fetchProfile.retry = {
               ...(fetchProfile.retry ?? {}),
-              maxAttempts: 2,
-              backoffMs: 5000,
+              maxAttempts: 1,
+              backoffMs: 3000,
             };
             fetchProfile.refetchMaxRounds = 1;
             fetchProfile.refetchBatchSize = 1;
