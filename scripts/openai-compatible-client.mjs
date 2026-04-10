@@ -70,11 +70,31 @@ function normalizeApiProtocol(apiProtocol) {
     : 'openai-completions';
 }
 
+function normalizeBaseUrl(baseUrl) {
+  const rawValue = String(baseUrl ?? '').trim();
+  if (!rawValue) return rawValue;
+
+  try {
+    const url = new URL(rawValue);
+    const normalizedPath = url.pathname.replace(/\/+$/, '');
+    if (!normalizedPath || normalizedPath === '/') {
+      url.pathname = '/v1';
+    } else {
+      url.pathname = normalizedPath;
+    }
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/+$/, '');
+  } catch {
+    return rawValue.replace(/\/+$/, '');
+  }
+}
+
 function resolveRequestUrl(baseUrl, apiProtocol) {
   const endpointPath = normalizeApiProtocol(apiProtocol) === OPENAI_RESPONSES_API
     ? '/responses'
     : '/chat/completions';
-  return `${String(baseUrl).replace(/\/+$/, '')}${endpointPath}`;
+  return `${normalizeBaseUrl(baseUrl)}${endpointPath}`;
 }
 
 function resolveRequestTarget(baseUrl, apiProtocol) {

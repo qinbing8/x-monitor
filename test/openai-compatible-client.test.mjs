@@ -125,6 +125,32 @@ test('postChatCompletions routes openai-responses requests to /responses and ext
   assert.equal(completion.diagnostics.completionTokens, 7);
 });
 
+test('postChatCompletions appends /v1 for origin-only openai-compatible base URLs', async () => {
+  let requestUrl = null;
+  await postChatCompletions({
+    baseUrl: 'https://api.x.ai',
+    apiKey: 'test-key',
+    model: 'grok-test',
+    messages: [{ role: 'user', content: 'hello' }],
+    timeoutMs: 5000,
+    temperature: 0,
+    maxTokens: 32,
+    fetchImpl: async (url) => {
+      requestUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: 'world' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 12, completion_tokens: 7 },
+        }),
+      };
+    },
+  });
+
+  assert.equal(requestUrl, 'https://api.x.ai/v1/chat/completions');
+});
+
 test('postChatCompletions surfaces HTTP failures with status metadata', async () => {
   await assert.rejects(
     postChatCompletions({
