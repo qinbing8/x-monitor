@@ -16,8 +16,9 @@ const DEFAULT_TIER_INTERVALS = {
 };
 const MAX_SCORING_TWEET_TEXT_CHARS = 140;
 const MAX_ROSTER_SCORE_OUTPUT_TOKENS = 1500;
-const ROSTER_STATE_VERSION = 2;
-const ROSTER_SELECTION_STRATEGY = 'cadence_hash_v1';
+const DEFAULT_MIN_DAILY_ROSTER_SIZE = 12;
+const ROSTER_STATE_VERSION = 3;
+const ROSTER_SELECTION_STRATEGY = 'cadence_hash_v2_topup_floor';
 
 function normalizeNumber(value, fallback) {
   const parsed = Number(value);
@@ -66,17 +67,9 @@ function normalizeOptionalRunDateString(value) {
   }
 }
 
-function resolveStoredLastSelectedAt(entry, fallbackDate = null) {
+function resolveStoredLastSelectedAt(entry) {
   const direct = normalizeOptionalRunDateString(entry?.lastSelectedAt);
-  if (direct) return direct;
-
-  const selectionCount = Math.max(0, normalizeNumber(entry?.selectionCount, 0));
-  if (selectionCount <= 0) return null;
-
-  const evaluatedDate = normalizeOptionalRunDateString(entry?.lastEvaluatedAt);
-  if (evaluatedDate) return evaluatedDate;
-
-  return fallbackDate;
+  return direct ?? null;
 }
 
 function daysBetweenDates(leftDate, rightDate) {
@@ -157,6 +150,35 @@ function isDormantCooldownActive(entry, runDate) {
   return daysBetweenDates(runDate, nextEligibleAt) < 0;
 }
 
+function resolveAccountLagDays(entry, runDate) {
+  return entry.lastSelectedAt ? daysBetweenDates(runDate, entry.lastSelectedAt) : Number.POSITIVE_INFINITY;
+}
+
+function resolveSelectionPriority(entry) {
+  const postCount = normalizeNumber(entry?.postCount, null);
+  if (postCount === 0) return 5;
+  if (entry.lastFetchStatus === 'dormant_skipped') return 4;
+  if (entry.lastFetchStatus === 'no_tweets_found') return 3;
+  if (entry.lastFetchStatus === 'incomplete' || entry.lastFetchStatus === 'soft_failed' || entry.lastFetchStatus === 'fetch_failed') {
+    return 2;
+  }
+  if (entry.lastFetchStatus === 'covered') return 0;
+  return 1;
+}
+
+function compareTopUpCandidates(left, right, runDate) {
+  const priorityDelta = resolveSelectionPriority(left) - resolveSelectionPriority(right);
+  if (priorityDelta !== 0) return priorityDelta;
+
+  const scoreDelta = right.score - left.score;
+  if (scoreDelta !== 0) return scoreDelta;
+
+  const lagDelta = resolveAccountLagDays(right, runDate) - resolveAccountLagDays(left, runDate);
+  if (lagDelta !== 0) return lagDelta;
+
+  return String(left.accountKey ?? left.handle ?? '').localeCompare(String(right.accountKey ?? right.handle ?? ''));
+}
+
 function resolvePreparedSelectionEntries(accounts, preparedSelectionKeys) {
   const keySet = new Set(normalizeSelectionKeys(preparedSelectionKeys));
   if (keySet.size === 0) return [];
@@ -215,6 +237,7 @@ function resolveRosterConfig(config, skillRoot) {
     dailyCsvPath: resolveMaybeRelative(skillRoot, roster.dailyCsvPath ?? './X列表关注者.daily.csv'),
     scoreFilePath: resolveMaybeRelative(skillRoot, roster.scoreFilePath ?? './account-score.json'),
     dormantCooldownDays: Math.max(1, normalizeNumber(roster.dormantCooldownDays, 7)),
+    minDailyRosterSize: Math.max(1, normalizeNumber(roster.minDailyRosterSize, DEFAULT_MIN_DAILY_ROSTER_SIZE)),
     scoringEnabled: scoring.enabled === true,
     promptFile: resolveMaybeRelative(skillRoot, scoring.promptFile ?? 'assets/prompts/gpt-roster-score.txt'),
     batchSize: Math.max(1, normalizeNumber(scoring.batchSize, 20)),
@@ -270,9 +293,6 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
     )),
   );
   const lastPreparedRunDate = normalizeOptionalRunDateString(rawState.meta?.lastPreparedRunDate);
-  const fallbackPreparedDate = lastPreparedRunDate
-    ?? normalizeOptionalRunDateString(rawState.meta?.lastScoredRunDate)
-    ?? null;
   const preparedSelectionKeys = normalizeSelectionKeys(rawState.meta?.preparedSelectionKeys);
 
   const accounts = masterSeeds.map((seed) => {
@@ -288,7 +308,7 @@ async function readScoreState(scoreFilePath, masterSeeds, rosterConfig) {
       score,
       tier: existing?.tier ?? resolveTierForScore(score, rosterConfig),
       lastEvaluatedAt: existing?.lastEvaluatedAt ?? null,
-      lastSelectedAt: resolveStoredLastSelectedAt(existing, fallbackPreparedDate),
+      lastSelectedAt: resolveStoredLastSelectedAt(existing),
       lastFetchStatus: existing?.lastFetchStatus ?? null,
       highValueHitCount: normalizeNumber(existing?.highValueHitCount, 0),
       lowValueChatCount: normalizeNumber(existing?.lowValueChatCount, 0),
@@ -318,14 +338,8 @@ async function writeScoreState(scoreFilePath, state) {
 
 function pickFallbackEntries(accounts, runDate, rosterConfig) {
   return [...accounts]
-    .sort((left, right) => {
-      const scoreDelta = right.score - left.score;
-      if (scoreDelta !== 0) return scoreDelta;
-      const leftLag = left.lastSelectedAt ? daysBetweenDates(runDate, left.lastSelectedAt) : Number.POSITIVE_INFINITY;
-      const rightLag = right.lastSelectedAt ? daysBetweenDates(runDate, right.lastSelectedAt) : Number.POSITIVE_INFINITY;
-      return rightLag - leftLag;
-    })
-    .slice(0, 1);
+    .sort((left, right) => compareTopUpCandidates(left, right, runDate))
+    .slice(0, Math.max(1, rosterConfig.minDailyRosterSize));
 }
 
 function selectDailyRosterEntries(accounts, runDate, rosterConfig) {
@@ -353,7 +367,29 @@ function selectDailyRosterEntries(accounts, runDate, rosterConfig) {
     }
   }
 
-  const effectiveSelection = selected.length > 0 ? selected : pickFallbackEntries(eligibleAccounts, runDate, rosterConfig);
+  const effectiveSelection = selected.length > 0
+    ? [...selected]
+    : pickFallbackEntries(eligibleAccounts, runDate, rosterConfig);
+  const targetDailyCount = Math.min(
+    eligibleAccounts.length,
+    Math.max(effectiveSelection.length, rosterConfig.minDailyRosterSize),
+  );
+  const selectedKeys = new Set(effectiveSelection.map((entry) => entry.accountKey ?? buildAccountStateKey(entry) ?? ''));
+  const topUpCandidates = eligibleAccounts
+    .filter((entry) => {
+      const candidateKey = entry.accountKey ?? buildAccountStateKey(entry) ?? '';
+      return candidateKey && !selectedKeys.has(candidateKey);
+    })
+    .sort((left, right) => compareTopUpCandidates(left, right, runDate));
+  let topUpSelectedCount = 0;
+  for (const entry of topUpCandidates) {
+    if (effectiveSelection.length >= targetDailyCount) break;
+    effectiveSelection.push(entry);
+    const candidateKey = entry.accountKey ?? buildAccountStateKey(entry) ?? '';
+    if (candidateKey) selectedKeys.add(candidateKey);
+    topUpSelectedCount += 1;
+  }
+
   const preparedSelectionKeys = [];
   for (const entry of effectiveSelection) {
     entry.lastSelectedAt = runDate;
@@ -366,6 +402,7 @@ function selectDailyRosterEntries(accounts, runDate, rosterConfig) {
     preparedSelectionKeys: normalizeSelectionKeys(preparedSelectionKeys),
     cooldownSkippedCount,
     coldStartSelectedCount,
+    topUpSelectedCount,
   };
 }
 
@@ -379,7 +416,10 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
   const scoreState = await readScoreState(rosterConfig.scoreFilePath, masterSeeds, rosterConfig);
   if (scoreState.meta?.lastPreparedRunDate === runDate) {
     const preparedEntries = resolvePreparedSelectionEntries(scoreState.accounts, scoreState.meta?.preparedSelectionKeys);
-    if (preparedEntries.length > 0) {
+    const canReusePreparedSelection = preparedEntries.length > 0
+      && preparedEntries.length >= rosterConfig.minDailyRosterSize
+      && scoreState.meta?.selectionStrategy === ROSTER_SELECTION_STRATEGY;
+    if (canReusePreparedSelection) {
       const dailyRows = preparedEntries.map(buildDailyRosterRow);
       const csvText = serializeDailyRosterCsv(dailyRows);
       await ensureParentDir(rosterConfig.dailyCsvPath);
@@ -399,11 +439,16 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
         scoreFilePath: rosterConfig.scoreFilePath,
         selectionStrategy: scoreState.meta?.selectionStrategy ?? ROSTER_SELECTION_STRATEGY,
         cooldownSkippedCount: scoreState.meta?.cooldownSkippedCount ?? 0,
+        topUpSelectedCount: scoreState.meta?.topUpSelectedCount ?? 0,
         reusedFrom: 'score_state',
       };
     }
     const existingDailyRoster = await readExistingDailyRoster(rosterConfig.dailyCsvPath);
-    if (existingDailyRoster && existingDailyRoster.dailyCount > 0) {
+    const canReuseLegacyDailyCsv = existingDailyRoster
+      && existingDailyRoster.dailyCount > 0
+      && existingDailyRoster.dailyCount >= rosterConfig.minDailyRosterSize
+      && scoreState.meta?.selectionStrategy === ROSTER_SELECTION_STRATEGY;
+    if (canReuseLegacyDailyCsv) {
       logger?.info('roster_daily_reused', {
         runDate,
         masterCount: masterSeeds.length,
@@ -439,6 +484,7 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
     preparedSelectionKeys: selection.preparedSelectionKeys,
     cooldownSkippedCount: selection.cooldownSkippedCount,
     coldStartSelectedCount: selection.coldStartSelectedCount,
+    topUpSelectedCount: selection.topUpSelectedCount,
     updatedAt: new Date().toISOString(),
   };
   await writeScoreState(rosterConfig.scoreFilePath, scoreState);
@@ -451,6 +497,7 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
     selectionStrategy: ROSTER_SELECTION_STRATEGY,
     cooldownSkippedCount: selection.cooldownSkippedCount,
     coldStartSelectedCount: selection.coldStartSelectedCount,
+    topUpSelectedCount: selection.topUpSelectedCount,
   });
 
   return {
@@ -462,6 +509,7 @@ export async function prepareDailyRoster({ configPath, date, logger } = {}) {
     selectionStrategy: ROSTER_SELECTION_STRATEGY,
     cooldownSkippedCount: selection.cooldownSkippedCount,
     coldStartSelectedCount: selection.coldStartSelectedCount,
+    topUpSelectedCount: selection.topUpSelectedCount,
   };
 }
 

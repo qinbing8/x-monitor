@@ -35,6 +35,7 @@ function withRosterConfig(config) {
       dailyCsvPath: './daily.csv',
       scoreFilePath: './account-score.json',
       dormantCooldownDays: 7,
+      minDailyRosterSize: 1,
       scoring: {
         enabled: true,
         promptFile: './assets/prompts/gpt-roster-score.txt',
@@ -78,7 +79,7 @@ test('prepareDailyRoster staggers cold-start accounts instead of selecting the f
     assert.equal(scoreState.accounts[0].score, 2);
     assert.equal(scoreState.accounts[0].tier, 'every_other_day');
     assert.equal(scoreState.accounts[1].tier, 'every_other_day');
-    assert.equal(scoreState.meta.selectionStrategy, 'cadence_hash_v1');
+    assert.equal(scoreState.meta.selectionStrategy, 'cadence_hash_v2_topup_floor');
     const selectedEntries = scoreState.accounts.filter((entry) => entry.lastSelectedAt === '2026-03-23');
     assert.equal(selectedEntries.length, 1);
   } finally {
@@ -222,7 +223,181 @@ test('prepareDailyRoster heals invalid stored selection dates and still shrinks 
     const bob = scoreState.accounts.find((entry) => entry.handle === 'bob');
     assert.equal(scoreState.meta.lastPreparedRunDate, '2026-03-24');
     assert.equal(alice.lastSelectedAt, '2026-03-24');
-    assert.equal(bob.lastSelectedAt, '2026-03-23');
+    assert.equal(bob.lastSelectedAt, null);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('prepareDailyRoster ignores legacy lastScoredRunDate as selection proof when lastSelectedAt is missing', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    await writeFile(
+      `${fixture.skillRoot}\\account-score.json`,
+      JSON.stringify({
+        meta: {
+          lastScoredRunDate: '2026-03-23',
+        },
+        accounts: [
+          {
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+            postCount: 12,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-03-23T00:00:00Z',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 1,
+            lowValueChatCount: 0,
+            evaluationCount: 3,
+            selectionCount: 3,
+            reasoning: 'Useful updates.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1439790545048457225',
+            handle: 'bob',
+            displayName: 'Bob Chen',
+            userPageUrl: 'https://x.com/bob',
+            postCount: 7,
+            score: 4,
+            tier: 'daily',
+            lastEvaluatedAt: '2026-03-23T00:00:00Z',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 2,
+            lowValueChatCount: 0,
+            evaluationCount: 3,
+            selectionCount: 3,
+            reasoning: 'Daily-worthy updates.',
+            unseen: false,
+          },
+        ],
+      }, null, 2),
+    );
+
+    const summary = await prepareDailyRoster({
+      configPath: fixture.configPath,
+      date: '2026-03-24',
+    });
+
+    assert.equal(summary.dailyCount, 2);
+
+    const dailyCsv = await readText(summary.dailyCsvPath);
+    assert.match(dailyCsv, /alice/);
+    assert.match(dailyCsv, /bob/);
+
+    const scoreState = await readJson(summary.scoreFilePath);
+    const alice = scoreState.accounts.find((entry) => entry.handle === 'alice');
+    const bob = scoreState.accounts.find((entry) => entry.handle === 'bob');
+    assert.equal(alice.lastSelectedAt, '2026-03-24');
+    assert.equal(bob.lastSelectedAt, '2026-03-24');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('prepareDailyRoster tops up a too-small roster and prefers non-dormant candidates', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    config.roster.minDailyRosterSize = 2;
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const seedCsv = [
+      '\uFEFFTweetID,Handle,Name,Bio,CanDM,AccountCreateDate,Location,FollowersCount,FollowingCount,TotalFavouritesByUser,MediaCount,UserPageURL,ProfileBannerURL,ProfileURL,AvatarURL,PostCount,Verified,IsBlueVerified',
+      '"1599634054919245824","alice","Alice Maker","Builds tools","false","2022/12/5 13:17:41","Shanghai","3","156","106","0","https://x.com/alice","","https://example.com/alice","https://cdn.example/alice.png","12","false","false"',
+      '"1439790545048457225","bob","Bob Chen","Just fun","false","2021/9/20 11:16:41","","0","38","5","0","https://x.com/bob","","","https://cdn.example/bob.png","0","false","false"',
+      '"1555555555555555555","charlie","Charlie Ops","Ships infra","false","2020/5/20 11:16:41","","10","12","9","0","https://x.com/charlie","","","https://cdn.example/charlie.png","4","false","false"',
+    ].join('\n');
+    await writeFile(`${fixture.skillRoot}\\seed.csv`, seedCsv, 'utf8');
+
+    await writeFile(
+      `${fixture.skillRoot}\\account-score.json`,
+      JSON.stringify({
+        meta: {
+          stateVersion: 2,
+          lastPreparedRunDate: '2026-04-09',
+          selectionStrategy: 'cadence_hash_v1',
+        },
+        accounts: [
+          {
+            sourceTweetId: '1599634054919245824',
+            handle: 'alice',
+            displayName: 'Alice Maker',
+            userPageUrl: 'https://x.com/alice',
+            postCount: 12,
+            score: 4,
+            tier: 'daily',
+            lastEvaluatedAt: '2026-04-09T00:00:00Z',
+            lastSelectedAt: '2026-04-09',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 2,
+            lowValueChatCount: 0,
+            evaluationCount: 3,
+            selectionCount: 3,
+            reasoning: 'Daily-worthy updates.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1439790545048457225',
+            handle: 'bob',
+            displayName: 'Bob Chen',
+            userPageUrl: 'https://x.com/bob',
+            postCount: 0,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-04-09T00:00:00Z',
+            lastSelectedAt: '2026-04-09',
+            lastFetchStatus: 'dormant_skipped',
+            nextEligibleAt: '2026-04-10',
+            highValueHitCount: 0,
+            lowValueChatCount: 0,
+            evaluationCount: 3,
+            selectionCount: 3,
+            reasoning: 'Dormant recently.',
+            unseen: false,
+          },
+          {
+            sourceTweetId: '1555555555555555555',
+            handle: 'charlie',
+            displayName: 'Charlie Ops',
+            userPageUrl: 'https://x.com/charlie',
+            postCount: 4,
+            score: 2,
+            tier: 'every_other_day',
+            lastEvaluatedAt: '2026-04-09T00:00:00Z',
+            lastSelectedAt: '2026-04-09',
+            lastFetchStatus: 'covered',
+            highValueHitCount: 1,
+            lowValueChatCount: 0,
+            evaluationCount: 3,
+            selectionCount: 3,
+            reasoning: 'Stable updates.',
+            unseen: false,
+          },
+        ],
+      }, null, 2),
+    );
+
+    const summary = await prepareDailyRoster({
+      configPath: fixture.configPath,
+      date: '2026-04-10',
+    });
+
+    assert.equal(summary.dailyCount, 2);
+
+    const dailyCsv = await readText(summary.dailyCsvPath);
+    assert.match(dailyCsv, /alice/);
+    assert.match(dailyCsv, /charlie/);
+    assert.doesNotMatch(dailyCsv, /bob/);
+
+    const scoreState = await readJson(summary.scoreFilePath);
+    assert.equal(scoreState.meta.dailyCount, 2);
   } finally {
     await fixture.cleanup();
   }

@@ -24,6 +24,7 @@ function withRosterConfig(config) {
       dailyCsvPath: './daily.csv',
       scoreFilePath: './account-score.json',
       dormantCooldownDays: 7,
+      minDailyRosterSize: 1,
       scoring: {
         enabled: true,
         promptFile: './assets/prompts/gpt-roster-score.txt',
@@ -57,6 +58,7 @@ test('prepareDailyRoster rebuilds the same-day roster from score state without r
           lastPreparedRunDate: '2026-03-24',
           dailyCount: 2,
           preparedSelectionKeys: ['handle:alice', 'handle:bob'],
+          selectionStrategy: 'cadence_hash_v2_topup_floor',
         },
         accounts: [
           {
