@@ -132,12 +132,27 @@ function normalizeTweetTextForPrompt(text) {
     .trim();
 }
 
+function normalizeTweetTextForDisplay(text) {
+  return String(text ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\\r\\n|\\n|\\r/g, ' ')
+    .replace(/\n+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normalizeTweetTextForHeuristics(text) {
   return normalizeTweetTextForPrompt(text).normalize('NFKC');
 }
 
 export function compactTweetText(text, maxChars = MAX_DIGEST_EVIDENCE_TEXT_CHARS) {
   const normalized = normalizeTweetTextForPrompt(text);
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function compactReadableText(text, maxChars = MAX_DIGEST_EVIDENCE_TEXT_CHARS) {
+  const normalized = normalizeTweetTextForDisplay(text);
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
@@ -254,6 +269,12 @@ function resolveStageAnalysisProfile(config, sourceDocs, baseProfile, modelRefOv
     modelRef: effectiveModelRef,
     modelId: modelDef.modelId,
   };
+}
+
+function resolveOptionalStageAnalysisProfile(config, sourceDocs, baseProfile, modelRefOverride) {
+  const effectiveModelRef = String(modelRefOverride ?? '').trim();
+  if (!effectiveModelRef || effectiveModelRef === baseProfile.modelRef) return null;
+  return resolveStageAnalysisProfile(config, sourceDocs, baseProfile, effectiveModelRef);
 }
 
 function normalizeStoredMetric(value, fallback = 0) {
@@ -1003,6 +1024,7 @@ async function finalizeAnalyzeRun({
   runDir,
   analyzeInputPath,
   profile,
+  briefFallbackProfile = null,
   fetchImpl,
   timeoutMs,
   logger,
@@ -1043,6 +1065,7 @@ async function finalizeAnalyzeRun({
   });
   let continuationResult;
   let failureSummary = null;
+  let effectiveBriefProfile = profile;
   try {
     continuationResult = await runAnalysisWithContinuation({
       profile,
@@ -1053,65 +1076,149 @@ async function finalizeAnalyzeRun({
       logger: logger.child('continuation'),
     });
   } catch (error) {
-    const failureArtifact = buildFinalDraftFailureArtifact({
-      runDate,
-      analyzeInputPath,
-      profile,
-      timeoutMs,
-      items,
-      accounts,
-      warnings,
-      signalItems,
-      noiseItems,
-      digestItems,
-      omittedSignalTweetCount,
-      digestSelection,
-      evidenceBlockMode,
-      chunkSummaries,
-      summaryChunkCount,
-      summaryFailedChunkCount,
-      rosterModelId,
-      screeningModelId,
-      rosterScoring,
-      rosterScoringError,
-      renderedPrompt,
-      coverage,
-      fetchDiagnosis,
-      error,
-    });
-    let analyzeErrorPath = null;
-    try {
-      analyzeErrorPath = await writeJsonArtifact(runDir, analyzeErrorFileName, failureArtifact);
-    } catch (artifactError) {
-      logger.error('analyze_final_draft_error_artifact_failed', {
+    const fallbackProfile = briefFallbackProfile && briefFallbackProfile.modelId !== profile.modelId
+      ? briefFallbackProfile
+      : null;
+    if (fallbackProfile) {
+      logger.warn('analyze_final_draft_primary_failed_retrying_fallback', {
         runDate,
         analysisProfile: profile.name,
-        artifactFileName: analyzeErrorFileName,
-        error: artifactError?.message ?? String(artifactError),
+        primaryModel: profile.modelId,
+        fallbackModel: fallbackProfile.modelId,
+        error: error?.message ?? String(error),
       });
+      try {
+        continuationResult = await runAnalysisWithContinuation({
+          profile: fallbackProfile,
+          messages: [{ role: 'user', content: renderedPrompt }],
+          fetchImpl,
+          timeoutMs,
+          maxContinuations: fallbackProfile.maxContinuations ?? 2,
+          logger: logger.child('continuation_fallback'),
+        });
+        effectiveBriefProfile = fallbackProfile;
+      } catch (fallbackError) {
+        const failureArtifact = buildFinalDraftFailureArtifact({
+          runDate,
+          analyzeInputPath,
+          profile: fallbackProfile,
+          timeoutMs,
+          items,
+          accounts,
+          warnings,
+          signalItems,
+          noiseItems,
+          digestItems,
+          omittedSignalTweetCount,
+          digestSelection,
+          evidenceBlockMode,
+          chunkSummaries,
+          summaryChunkCount,
+          summaryFailedChunkCount,
+          rosterModelId,
+          screeningModelId,
+          rosterScoring,
+          rosterScoringError,
+          renderedPrompt,
+          coverage,
+          fetchDiagnosis,
+          error: fallbackError,
+        });
+        let analyzeErrorPath = null;
+        try {
+          analyzeErrorPath = await writeJsonArtifact(runDir, analyzeErrorFileName, failureArtifact);
+        } catch (artifactError) {
+          logger.error('analyze_final_draft_error_artifact_failed', {
+            runDate,
+            analysisProfile: profile.name,
+            artifactFileName: analyzeErrorFileName,
+            error: artifactError?.message ?? String(artifactError),
+          });
+        }
+        logger.error('analyze_final_draft_failed', {
+          runDate,
+          analysisProfile: profile.name,
+          model: fallbackProfile.modelId,
+          errorClassification: failureArtifact.error.classification,
+          errorCode: failureArtifact.error.code,
+          httpStatus: failureArtifact.error.httpStatus,
+          latencyMs: failureArtifact.error.latencyMs,
+          operationName: failureArtifact.error.operationName,
+          analyzeErrorPath,
+        });
+        continuationResult = {
+          text: '',
+          finishReason: null,
+          continuationRounds: 0,
+          truncated: false,
+          durationMs: Number(failureArtifact.error?.continuation?.durationMs ?? 0) || 0,
+          diagnostics: failureArtifact.error ?? null,
+        };
+        failureSummary = analyzeErrorPath
+          ? `> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。详细诊断见 ${analyzeErrorFileName}。`
+          : '> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。';
+      }
+    } else {
+      const failureArtifact = buildFinalDraftFailureArtifact({
+        runDate,
+        analyzeInputPath,
+        profile,
+        timeoutMs,
+        items,
+        accounts,
+        warnings,
+        signalItems,
+        noiseItems,
+        digestItems,
+        omittedSignalTweetCount,
+        digestSelection,
+        evidenceBlockMode,
+        chunkSummaries,
+        summaryChunkCount,
+        summaryFailedChunkCount,
+        rosterModelId,
+        screeningModelId,
+        rosterScoring,
+        rosterScoringError,
+        renderedPrompt,
+        coverage,
+        fetchDiagnosis,
+        error,
+      });
+      let analyzeErrorPath = null;
+      try {
+        analyzeErrorPath = await writeJsonArtifact(runDir, analyzeErrorFileName, failureArtifact);
+      } catch (artifactError) {
+        logger.error('analyze_final_draft_error_artifact_failed', {
+          runDate,
+          analysisProfile: profile.name,
+          artifactFileName: analyzeErrorFileName,
+          error: artifactError?.message ?? String(artifactError),
+        });
+      }
+      logger.error('analyze_final_draft_failed', {
+        runDate,
+        analysisProfile: profile.name,
+        model: profile.modelId,
+        errorClassification: failureArtifact.error.classification,
+        errorCode: failureArtifact.error.code,
+        httpStatus: failureArtifact.error.httpStatus,
+        latencyMs: failureArtifact.error.latencyMs,
+        operationName: failureArtifact.error.operationName,
+        analyzeErrorPath,
+      });
+      continuationResult = {
+        text: '',
+        finishReason: null,
+        continuationRounds: 0,
+        truncated: false,
+        durationMs: Number(failureArtifact.error?.continuation?.durationMs ?? 0) || 0,
+        diagnostics: failureArtifact.error ?? null,
+      };
+      failureSummary = analyzeErrorPath
+        ? `> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。详细诊断见 ${analyzeErrorFileName}。`
+        : '> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。';
     }
-    logger.error('analyze_final_draft_failed', {
-      runDate,
-      analysisProfile: profile.name,
-      model: profile.modelId,
-      errorClassification: failureArtifact.error.classification,
-      errorCode: failureArtifact.error.code,
-      httpStatus: failureArtifact.error.httpStatus,
-      latencyMs: failureArtifact.error.latencyMs,
-      operationName: failureArtifact.error.operationName,
-      analyzeErrorPath,
-    });
-    continuationResult = {
-      text: '',
-      finishReason: null,
-      continuationRounds: 0,
-      truncated: false,
-      durationMs: Number(failureArtifact.error?.continuation?.durationMs ?? 0) || 0,
-      diagnostics: failureArtifact.error ?? null,
-    };
-    failureSummary = analyzeErrorPath
-      ? `> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。详细诊断见 ${analyzeErrorFileName}。`
-      : '> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。';
   }
 
   const outputText = continuationResult.text.trim();
@@ -1125,7 +1232,7 @@ async function finalizeAnalyzeRun({
     logger.warn('analyze_final_draft_weak', {
       runDate,
       analysisProfile: profile.name,
-      model: profile.modelId,
+      model: effectiveBriefProfile.modelId,
       substantiveLineCount,
     });
   }
@@ -1150,7 +1257,7 @@ async function finalizeAnalyzeRun({
     meta: {
       analysisProfile: profile.name,
       provider: profile.providerRef,
-      model: profile.modelId,
+      model: effectiveBriefProfile.modelId,
       analyzedAt: new Date().toISOString(),
       analyzeInputPath,
       timeoutMs,
@@ -1161,7 +1268,7 @@ async function finalizeAnalyzeRun({
       noiseTweetCount: noiseItems.length,
       rosterModel: rosterModelId,
       screeningModel: screeningModelId,
-      briefModel: profile.modelId,
+      briefModel: effectiveBriefProfile.modelId,
       candidateSelectionMode: digestSelection.mode,
       screeningChunkCount: digestSelection.screeningChunkCount,
       screeningCandidateCount: digestSelection.screeningCandidateCount,
@@ -1371,7 +1478,13 @@ function buildStructuredFallbackDailyBrief({
   failureSummary = null,
 } = {}) {
   const safeDigestItems = Array.isArray(digestItems) ? digestItems.filter(Boolean) : [];
-  const safeChunkSummaries = Array.isArray(chunkSummaries) ? chunkSummaries.filter(Boolean) : [];
+  const safeChunkSummaries = Array.isArray(chunkSummaries)
+    ? chunkSummaries.filter(Boolean).map((entry) => ({
+      ...entry,
+      headline: normalizeTweetTextForDisplay(entry?.headline ?? ''),
+      summary: compactReadableText(entry?.summary ?? '', MAX_DIGEST_SUMMARY_TEXT_CHARS),
+    }))
+    : [];
   const rankedDigestItems = [...safeDigestItems].sort(compareDigestItems);
   const preferredDigestItems = [...selectDigestEvidenceItems(rankedDigestItems, {
     maxTotalItems: rankedDigestItems.length || 1,
@@ -1382,25 +1495,25 @@ function buildStructuredFallbackDailyBrief({
 
   const summaryLines = ((safeChunkSummaries.length > 0 && !promotionalItemsDropped) ? safeChunkSummaries : displayDigestItems.slice(0, 4).map((item) => ({
     headline: `@${item.username}`,
-    summary: compactTweetText(item.text, 100),
+    summary: compactReadableText(item.text, 100),
   })))
     .slice(0, 4)
     .map((entry) => {
-      const headline = String(entry?.headline ?? '').trim() || '重点更新';
-      const summary = String(entry?.summary ?? '').trim();
+      const headline = normalizeTweetTextForDisplay(entry?.headline ?? '') || '重点更新';
+      const summary = compactReadableText(entry?.summary ?? '', MAX_DIGEST_SUMMARY_TEXT_CHARS);
       return summary ? `- ${headline}：${summary}` : `- ${headline}`;
     });
 
   const editorLines = displayDigestItems.slice(0, 5).map((item) => {
     const handle = String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, '') || 'unknown';
-    const text = compactTweetText(item?.text ?? '', 90);
+    const text = compactReadableText(item?.text ?? '', 90);
     const url = String(item?.originalUrl ?? '').trim();
     return [text ? `- @${handle}：${text}` : `- @${handle}`, url ? `  - ${url}` : null].filter(Boolean).join('\n');
   });
 
   const digestLines = displayDigestItems.slice(0, 8).map((item) => {
     const handle = String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, '') || 'unknown';
-    const text = compactTweetText(item?.text ?? '', 110);
+    const text = compactReadableText(item?.text ?? '', 110);
     const url = String(item?.originalUrl ?? '').trim();
     return `- @${handle}：${text}${url ? ` ${url}` : ''}`.trim();
   });
@@ -1690,6 +1803,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
   const profile = resolveAnalysisProfile(config, sourceDocs, analysisProfile || config.analysis.activeProfile);
   const rosterProfile = resolveStageAnalysisProfile(config, sourceDocs, profile, profile.rosterModelRef);
   const screeningProfile = resolveStageAnalysisProfile(config, sourceDocs, profile, profile.screeningModelRef);
+  const briefFallbackProfile = resolveOptionalStageAnalysisProfile(config, sourceDocs, profile, profile.briefFallbackModelRef);
   const effectiveTimeoutMs = resolveAnalyzeTimeoutMs(profile.timeoutMs);
   const startedAt = Date.now();
 
@@ -1734,6 +1848,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
       runDir,
       analyzeInputPath: persistedAnalyzeInputPath,
       profile,
+      briefFallbackProfile,
       fetchImpl,
       timeoutMs: effectiveTimeoutMs,
       logger,
@@ -1847,6 +1962,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
     runDir,
     analyzeInputPath: writtenAnalyzeInputPath,
     profile,
+    briefFallbackProfile,
     fetchImpl,
     timeoutMs: effectiveTimeoutMs,
     logger,

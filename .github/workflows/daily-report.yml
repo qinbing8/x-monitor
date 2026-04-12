@@ -170,6 +170,7 @@ jobs:
             },
           };
           config.analysis.profiles['gpt-default'].modelRef = 'gpt-brief';
+          config.analysis.profiles['gpt-default'].briefFallbackModelRef = 'gpt-screening';
           config.analysis.profiles['gpt-default'].screeningModelRef = 'gpt-screening';
           config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-roster';
           const fetchProfile = config.fetch?.profiles?.['grok-default'];

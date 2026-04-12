@@ -421,6 +421,38 @@ test('runAnalyze writes a readable structured fallback brief when the GPT brief 
   }
 });
 
+test('runAnalyze fallback brief keeps multiline tweet summaries readable', async () => {
+  const fixture = await createMockSkillFixture();
+  const multilineFetchResponse = [
+    '```csv',
+    'username,tweet_id,created_at,text,original_url',
+    '"alice","190001","2026-03-23T01:02:03Z","Line one.',
+    'Line two with more context.","https://x.com/alice/status/190001"',
+    '```',
+  ].join('\n');
+
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(multilineFetchResponse),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(''),
+    });
+
+    const finalReport = await readText(analyzeSummary.finalReportPath);
+    assert.match(finalReport, /Line one\.\s+Line two with more context\./);
+    assert.doesNotMatch(finalReport, /\\n/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runAnalyze falls back when the GPT brief is structurally weak despite being non-empty', async () => {
   const fixture = await createMockSkillFixture();
   const weakMarkdown = [
@@ -463,6 +495,53 @@ test('runAnalyze falls back when the GPT brief is structurally weak despite bein
     assert.match(analyzeResult.answer.markdown, /编辑精选/);
     assert.match(analyzeResult.answer.markdown, /高价值推文完整清单/);
     assert.match(analyzeResult.answer.markdown, /Shipped a new CLI for tracing agent runs/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze retries final draft with a fallback brief model when the primary model is unavailable', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    config.analysis.profiles['gpt-default'].briefFallbackModelRef = 'gpt-main-mini';
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const requests = [];
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: async (_url, options) => {
+        const body = JSON.parse(options?.body ?? '{}');
+        requests.push(body);
+        if (body.model === 'gpt-5.4-xhigh') {
+          return {
+            ok: false,
+            status: 503,
+            headers: {},
+            text: async () => '{"error":{"message":"Service temporarily unavailable","type":"api_error"}}',
+          };
+        }
+        return createCompletionResponse(FIXTURE_ANALYZE_MARKDOWN, body);
+      },
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'model');
+    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4');
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].model, 'gpt-5.4-xhigh');
+    assert.equal(requests[1].model, 'gpt-5.4');
+
+    const finalReport = await readText(analyzeSummary.finalReportPath);
+    assert.equal(finalReport, FIXTURE_ANALYZE_MARKDOWN);
   } finally {
     await fixture.cleanup();
   }
