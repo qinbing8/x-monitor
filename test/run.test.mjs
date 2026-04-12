@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { resolveRunDate } from '../scripts/artifact-store.mjs';
 import { parseArgs, main } from '../scripts/run.mjs';
 
 test('parseArgs supports mode, analysis-profile, analyze-input, seed-csv, batch-size and skip-precheck overrides', () => {
@@ -90,4 +91,70 @@ test('main rejects unsupported modes', async () => {
     main(['--mode', 'unknown']),
     /Unsupported mode: unknown/,
   );
+});
+
+function installFakeClock(initialValue) {
+  const RealDate = Date;
+  let currentMs = Number(initialValue);
+
+  class FakeDate extends RealDate {
+    constructor(value) {
+      super(arguments.length === 0 ? currentMs : value);
+    }
+
+    static now() {
+      return currentMs;
+    }
+
+    static parse(value) {
+      return RealDate.parse(value);
+    }
+
+    static UTC(...args) {
+      return RealDate.UTC(...args);
+    }
+  }
+
+  globalThis.Date = FakeDate;
+  return {
+    set(iso) {
+      currentMs = Number(iso);
+    },
+    restore() {
+      globalThis.Date = RealDate;
+    },
+  };
+}
+
+test('run mode freezes implicit run date across pipeline stages', async () => {
+  const beforeMidnightMs = Date.parse('2026-04-12T23:59:50');
+  const afterMidnightMs = Date.parse('2026-04-13T00:10:00');
+  const clock = installFakeClock(beforeMidnightMs);
+  const seenDates = [];
+
+  try {
+    await main([], {
+      prepareDailyRosterImpl: async ({ date }) => {
+        seenDates.push(['roster', resolveRunDate(date)]);
+        return { ok: true };
+      },
+      runFetchImpl: async ({ date }) => {
+        seenDates.push(['fetch', resolveRunDate(date)]);
+        clock.set(afterMidnightMs);
+        return { ok: true };
+      },
+      runAnalyzeImpl: async ({ date }) => {
+        seenDates.push(['analyze', resolveRunDate(date)]);
+        return { ok: true };
+      },
+    });
+  } finally {
+    clock.restore();
+  }
+
+  assert.deepEqual(seenDates, [
+    ['roster', '2026-04-12'],
+    ['fetch', '2026-04-12'],
+    ['analyze', '2026-04-12'],
+  ]);
 });

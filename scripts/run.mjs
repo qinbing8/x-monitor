@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
+import { resolveRunDate } from './artifact-store.mjs';
 import { runFetch } from './fetch.mjs';
 import { runAnalyze } from './analyze.mjs';
 import { prepareDailyRoster } from './roster.mjs';
@@ -51,17 +52,20 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     throw new Error(`Unsupported mode: ${options.mode}`);
   }
 
+  const sharedRunDate = options.analyzeInputPath
+    ? undefined
+    : resolveRunDate(options.date ?? new Date());
   const summary = { mode: options.mode };
   if (options.mode === 'fetch' || options.mode === 'run') {
     if (!options.seedCsvPath) {
       summary.roster = await prepareDailyRosterImpl({
         configPath: options.configPath,
-        date: options.date,
+        date: sharedRunDate,
       });
     }
     summary.fetch = await runFetchImpl({
       configPath: options.configPath,
-      date: options.date,
+      date: sharedRunDate,
       seedCsvPath: options.seedCsvPath,
       batchSize: options.batchSize,
       referenceTime: options.referenceTime,
@@ -71,7 +75,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   if (options.mode === 'analyze' || options.mode === 'run') {
     summary.analyze = await runAnalyzeImpl({
       configPath: options.configPath,
-      date: options.date,
+      date: sharedRunDate,
       analysisProfile: options.analysisProfile,
       analyzeInputPath: options.analyzeInputPath,
     });
