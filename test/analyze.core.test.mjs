@@ -133,6 +133,28 @@ test('selectDigestEvidenceItems caps prompt evidence by account and total count'
   assert.equal(selected.filter((item) => item.username === 'alice').length, 2);
 });
 
+test('selectDigestEvidenceItems defaults to the expanded digest evidence cap while keeping per-account limits', () => {
+  const aliceItems = Array.from({ length: 12 }, (_, index) => ({
+    tweetId: `alice-${index + 1}`,
+    username: 'alice',
+    createdAt: `2026-03-23T${String(23 - index).padStart(2, '0')}:00:00Z`,
+    text: `Alice technical update ${index + 1} with benchmark notes and docs https://example.com/alice/${index + 1}`,
+  }));
+  const otherItems = Array.from({ length: 40 }, (_, index) => ({
+    tweetId: `other-${index + 1}`,
+    username: `account-${index + 1}`,
+    createdAt: `2026-03-22T${String((index % 23) + 1).padStart(2, '0')}:00:00Z`,
+    text: `Technical update ${index + 1} with benchmark notes and docs https://example.com/${index + 1}`,
+  }));
+  const items = [...aliceItems, ...otherItems];
+
+  const selected = selectDigestEvidenceItems(items);
+  const aliceCount = selected.filter((item) => item.username === 'alice').length;
+
+  assert.equal(selected.length, 40);
+  assert.equal(aliceCount, 4);
+});
+
 test('selectDigestEvidenceItems deprioritizes promotional tweets in heuristic fallback', () => {
   const items = [
     {
@@ -347,7 +369,7 @@ test('mergeCandidateScreeningDecisions dedupes by tweet and applies per-account 
   assert.deepEqual(new Set(merged.map((item) => item.tweetId)), new Set(['1', '2', '4']));
 });
 
-test('mergeCandidateScreeningDecisions enforces a hard cap of 3 and a soft cap of 4 for priority-3 items', () => {
+test('mergeCandidateScreeningDecisions defaults to a hard cap of 4 items per account', () => {
   const signalItems = [
     { tweetId: '1', username: 'alice', createdAt: '2026-03-23T09:00:00Z', text: 'Release 1 with docs https://example.com/1' },
     { tweetId: '2', username: 'alice', createdAt: '2026-03-23T08:00:00Z', text: 'Release 2 with docs https://example.com/2' },
@@ -355,30 +377,34 @@ test('mergeCandidateScreeningDecisions enforces a hard cap of 3 and a soft cap o
     { tweetId: '4', username: 'alice', createdAt: '2026-03-23T06:00:00Z', text: 'Release 4 with docs https://example.com/4' },
     { tweetId: '5', username: 'alice', createdAt: '2026-03-23T05:00:00Z', text: 'Release 5 with docs https://example.com/5' },
     { tweetId: '6', username: 'alice', createdAt: '2026-03-23T04:00:00Z', text: 'Release 6 with docs https://example.com/6' },
+    { tweetId: '7', username: 'alice', createdAt: '2026-03-23T03:00:00Z', text: 'Release 7 with docs https://example.com/7' },
   ];
 
-  const mergedWithLowPriorityFourth = mergeCandidateScreeningDecisions(signalItems, [
+  const mergedWithLowPrioritySixth = mergeCandidateScreeningDecisions(signalItems, [
     { tweetId: '1', handle: 'alice', priority: 3, reason: 'Top candidate.' },
     { tweetId: '2', handle: 'alice', priority: 2, reason: 'Second candidate.' },
     { tweetId: '3', handle: 'alice', priority: 2, reason: 'Third candidate.' },
-    { tweetId: '4', handle: 'alice', priority: 2, reason: 'Should be blocked at hard cap.' },
+    { tweetId: '4', handle: 'alice', priority: 2, reason: 'Fourth candidate.' },
+    { tweetId: '5', handle: 'alice', priority: 2, reason: 'Should be blocked at hard cap.' },
+    { tweetId: '6', handle: 'alice', priority: 2, reason: 'Should be blocked at hard cap.' },
   ], {
     maxTotalItems: 10,
   });
-  assert.deepEqual(mergedWithLowPriorityFourth.map((item) => item.tweetId), ['1', '2', '3']);
+  assert.deepEqual(mergedWithLowPrioritySixth.map((item) => item.tweetId), ['1', '2', '3', '4']);
 
-  const mergedWithHighPriorityFourth = mergeCandidateScreeningDecisions(signalItems, [
+  const mergedWithHighPrioritySixth = mergeCandidateScreeningDecisions(signalItems, [
     { tweetId: '1', handle: 'alice', priority: 3, reason: 'Top candidate.' },
-    { tweetId: '2', handle: 'alice', priority: 2, reason: 'Second candidate.' },
-    { tweetId: '3', handle: 'alice', priority: 2, reason: 'Third candidate.' },
-    { tweetId: '4', handle: 'alice', priority: 3, reason: 'High-priority item under the hard cap.' },
-    { tweetId: '5', handle: 'alice', priority: 3, reason: 'High-priority item under the hard cap.' },
-    { tweetId: '6', handle: 'alice', priority: 3, reason: 'Allowed as the soft-cap exception.' },
+    { tweetId: '2', handle: 'alice', priority: 3, reason: 'Second candidate.' },
+    { tweetId: '3', handle: 'alice', priority: 3, reason: 'Third candidate.' },
+    { tweetId: '4', handle: 'alice', priority: 3, reason: 'Fourth candidate.' },
+    { tweetId: '5', handle: 'alice', priority: 3, reason: 'Should still be blocked at hard cap.' },
+    { tweetId: '6', handle: 'alice', priority: 3, reason: 'Should still be blocked at hard cap.' },
+    { tweetId: '7', handle: 'alice', priority: 3, reason: 'Should still be blocked at hard cap.' },
   ], {
     maxTotalItems: 10,
   });
-  assert.equal(mergedWithHighPriorityFourth.length, 4);
-  assert.deepEqual(mergedWithHighPriorityFourth.map((item) => item.tweetId), ['1', '4', '5', '6']);
+  assert.equal(mergedWithHighPrioritySixth.length, 4);
+  assert.deepEqual(mergedWithHighPrioritySixth.map((item) => item.tweetId), ['1', '2', '3', '4']);
 });
 
 test('compactTweetText and buildTweetEvidenceBlock keep prompt tweet text bounded', () => {
