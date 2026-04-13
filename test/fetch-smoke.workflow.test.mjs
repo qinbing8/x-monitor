@@ -20,12 +20,12 @@ test('fetch-smoke workflow keeps Grok smoke diagnostics isolated from daily-repo
   assert.match(workflow, /node scripts\/run\.mjs --mode fetch/);
   assert.match(workflow, /fetch-smoke\.csv/);
   assert.match(workflow, /\.tmp\/github-actions\/openclaw\.json/);
-  assert.match(workflow, /fetchProfile\.timeoutMs = 75000;/);
+  assert.match(workflow, /fetchProfile\.timeoutMs = 100000;/);
   assert.match(workflow, /fetchProfile\.batchSize = 1;/);
-  assert.match(workflow, /fetchProfile\.concurrency = 1;/);
+  assert.match(workflow, /fetchProfile\.concurrency = 5;/);
   assert.match(workflow, /fetchProfile\.refetchMaxRounds = 0;/);
   assert.match(workflow, /fetchProfile\.refetchBatchSize = 1;/);
-  assert.match(workflow, /fetchProfile\.refetchConcurrency = 1;/);
+  assert.match(workflow, /fetchProfile\.refetchConcurrency = 5;/);
   assert.match(workflow, /Build fetch smoke diagnosis\s*\n\s+id:\s+build-diagnosis\s*\n\s+if:\s+always\(\)/);
   assert.match(workflow, /function tryReadJson\(path\)/);
   assert.match(workflow, /catch \(error\) \{\s+console\.error\(`Failed to parse JSON at \$\{path\}\. \$\{error\?\.message \?\? error\}`\);\s+return null;\s+\}/);

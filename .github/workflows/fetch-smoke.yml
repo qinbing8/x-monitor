@@ -165,12 +165,12 @@ jobs:
           if (!fetchProfile || typeof fetchProfile !== 'object') {
             throw new Error('Missing fetch profile: grok-default');
           }
-          fetchProfile.timeoutMs = 75000;
+          fetchProfile.timeoutMs = 100000;
           fetchProfile.batchSize = 1;
-          fetchProfile.concurrency = 1;
+          fetchProfile.concurrency = 5;
           fetchProfile.refetchMaxRounds = 0;
           fetchProfile.refetchBatchSize = 1;
-          fetchProfile.refetchConcurrency = 1;
+          fetchProfile.refetchConcurrency = 5;
           fetchProfile.retry = {
             ...(fetchProfile.retry ?? {}),
             maxAttempts: 1,

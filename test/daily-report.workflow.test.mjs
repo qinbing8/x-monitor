@@ -10,9 +10,9 @@ async function readUtf8(relativePath) {
 test('daily-report workflow keeps live fetch overrides bounded for GitHub Actions', async () => {
   const workflow = await readUtf8('../.github/workflows/daily-report.yml');
 
-  assert.match(workflow, /fetchProfile\.timeoutMs = 75000;/);
+  assert.match(workflow, /fetchProfile\.timeoutMs = 100000;/);
   assert.match(workflow, /fetchProfile\.batchSize = 1;/);
-  assert.match(workflow, /fetchProfile\.concurrency = 3;/);
+  assert.match(workflow, /fetchProfile\.concurrency = 5;/);
   assert.match(workflow, /fetchProfile\.refetchBatchSize = 1;/);
-  assert.match(workflow, /fetchProfile\.refetchConcurrency = 3;/);
+  assert.match(workflow, /fetchProfile\.refetchConcurrency = 5;/);
 });

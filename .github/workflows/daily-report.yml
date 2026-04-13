@@ -177,10 +177,10 @@ jobs:
           if (fetchProfile) {
             // Keep the live fetch profile narrow in GitHub Actions, but allow modest parallelism
             // so individual provider stalls do not serialize the entire roster.
-            fetchProfile.timeoutMs = 75000;
+            fetchProfile.timeoutMs = 100000;
             fetchProfile.maxOutputTokens = 1600;
             fetchProfile.batchSize = 1;
-            fetchProfile.concurrency = 3;
+            fetchProfile.concurrency = 5;
             fetchProfile.promptFile = 'assets/prompts/grok-fetch-live.txt';
             fetchProfile.retry = {
               ...(fetchProfile.retry ?? {}),
@@ -189,7 +189,7 @@ jobs:
             };
             fetchProfile.refetchMaxRounds = 1;
             fetchProfile.refetchBatchSize = 1;
-            fetchProfile.refetchConcurrency = 3;
+            fetchProfile.refetchConcurrency = 5;
             if (fetchProfile.precheck && typeof fetchProfile.precheck === 'object') {
               fetchProfile.precheck = {
                 ...fetchProfile.precheck,
