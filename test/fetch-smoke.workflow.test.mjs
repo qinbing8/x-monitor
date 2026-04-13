@@ -1,0 +1,65 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+async function readUtf8(relativePath) {
+  return readFile(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
+}
+
+test('fetch-smoke workflow keeps Grok smoke diagnostics isolated from daily-report', async () => {
+  const workflow = await readUtf8('../.github/workflows/fetch-smoke.yml');
+  const uploadStep = workflow.match(/- name: Upload fetch smoke artifacts[\s\S]*$/)?.[0] ?? '';
+
+  assert.match(workflow, /name:\s+fetch-smoke/);
+  assert.match(workflow, /on:\s*\n\s+workflow_dispatch:/);
+  assert.match(workflow, /GROK_RUNTIME_MODEL/);
+  assert.match(workflow, /requestedModel/);
+  assert.match(workflow, /chosenModel/);
+  assert.match(workflow, /availableModelCount/);
+  assert.match(workflow, /node scripts\/run\.mjs --mode fetch/);
+  assert.match(workflow, /fetch-smoke\.csv/);
+  assert.match(workflow, /\.tmp\/github-actions\/openclaw\.json/);
+  assert.match(workflow, /fetchProfile\.timeoutMs = 75000;/);
+  assert.match(workflow, /fetchProfile\.batchSize = 1;/);
+  assert.match(workflow, /fetchProfile\.concurrency = 1;/);
+  assert.match(workflow, /fetchProfile\.refetchMaxRounds = 0;/);
+  assert.match(workflow, /fetchProfile\.refetchBatchSize = 1;/);
+  assert.match(workflow, /fetchProfile\.refetchConcurrency = 1;/);
+  assert.match(workflow, /Build fetch smoke diagnosis\s*\n\s+id:\s+build-diagnosis\s*\n\s+if:\s+always\(\)/);
+  assert.match(workflow, /function tryReadJson\(path\)/);
+  assert.match(workflow, /catch \(error\) \{\s+console\.error\(`Failed to parse JSON at \$\{path\}\. \$\{error\?\.message \?\? error\}`\);\s+return null;\s+\}/);
+  assert.match(workflow, /const summary = tryReadJson\(summaryPath\);/);
+  assert.match(workflow, /const fetchResultPath = summary\?\.fetch\?\.fetchResultPath \?\? '';/);
+  assert.match(workflow, /const fetchRawPath = summary\?\.fetch\?\.fetchRawPath \?\? '';/);
+  assert.match(workflow, /const fetchResult = tryReadJson\(fetchResultPath\);/);
+  assert.match(workflow, /const fetchRaw = tryReadJson\(fetchRawPath\);/);
+  assert.match(workflow, /seedCount: Number\(summary\?\.fetch\?\.seedCount \?\? fetchResult\?\.meta\?\.seedCount \?\? 0\)/);
+  assert.match(workflow, /durationMs: Number\(summary\?\.fetch\?\.durationMs \?\? fetchResult\?\.meta\?\.durationMs \?\? 0\)/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchInputPath', summary\?\.fetch\?\.fetchInputPath \?\? ''\)/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchRawPath', summary\?\.fetch\?\.fetchRawPath \?\? ''\)/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchResultPath', summary\?\.fetch\?\.fetchResultPath \?\? ''\)/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchRawCsvPath', summary\?\.fetch\?\.fetchRawCsvPath \?\? ''\)/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchTweetIndexCsvPath', summary\?\.fetch\?\.fetchTweetIndexCsvPath \?\? ''\)/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchInputPath'/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchRawPath'/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchResultPath'/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchRawCsvPath'/);
+  assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchTweetIndexCsvPath'/);
+  assert.match(workflow, /steps\.build-diagnosis\.outputs\.fetchInputPath/);
+  assert.match(workflow, /steps\.build-diagnosis\.outputs\.fetchRawPath/);
+  assert.match(workflow, /steps\.build-diagnosis\.outputs\.fetchResultPath/);
+  assert.match(workflow, /steps\.build-diagnosis\.outputs\.fetchRawCsvPath/);
+  assert.match(workflow, /steps\.build-diagnosis\.outputs\.fetchTweetIndexCsvPath/);
+  assert.ok(uploadStep);
+  assert.doesNotMatch(uploadStep, /data\/\*\*\/fetch\.input\.json/);
+  assert.doesNotMatch(uploadStep, /data\/\*\*\/fetch\.raw\.json/);
+  assert.doesNotMatch(uploadStep, /data\/\*\*\/fetch\.result\.json/);
+  assert.doesNotMatch(uploadStep, /data\/\*\*\/fetch\.raw\.csv/);
+  assert.doesNotMatch(uploadStep, /data\/\*\*\/fetch\.tweet-index\.csv/);
+  assert.doesNotMatch(uploadStep, /\.tmp\/github-actions\/search\.json/);
+  assert.doesNotMatch(uploadStep, /\.tmp\/github-actions\/openclaw\.json/);
+  assert.doesNotMatch(workflow, /scripts\/publish-report\.mjs/);
+  assert.doesNotMatch(workflow, /Deploy Cloudflare Worker/);
+  assert.doesNotMatch(workflow, /--mode analyze/);
+});

@@ -1,0 +1,302 @@
+name: fetch-smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch-smoke:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+      GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+      GROK_BASE_URL: ${{ secrets.GROK_BASE_URL }}
+      GROK_MODEL: ${{ secrets.GROK_MODEL }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Prepare fetch-smoke runtime files
+        id: prepare-runtime
+        shell: bash
+        run: |
+          mkdir -p .tmp/github-actions
+          node --input-type=module - <<'EOF'
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+
+          const fallbackModel = 'grok-4.1-fast';
+          const requestedModel = String(process.env.GROK_MODEL ?? '').trim();
+          const apiKey = String(process.env.GROK_API_KEY ?? '').trim();
+          const rawBaseUrl = String(process.env.GROK_BASE_URL ?? '').trim();
+
+          function normalizeBaseUrl(value) {
+            const trimmed = String(value ?? '').trim().replace(/\/+$/, '');
+            if (!trimmed) return '';
+            return /\/v1$/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+          }
+
+          function unique(values) {
+            return [...new Set(values.filter(Boolean))];
+          }
+
+          function writeGithubKeyValue(filePath, key, value) {
+            appendFileSync(filePath, `${key}=${String(value ?? '')}\n`);
+          }
+
+          async function resolveGrokModelMeta() {
+            const preferredModels = unique([
+              requestedModel,
+              fallbackModel,
+              'grok-4-fast',
+              'grok-2-latest',
+            ]);
+            const baseUrl = normalizeBaseUrl(rawBaseUrl);
+            const fallbackChoice = requestedModel || fallbackModel;
+            if (!baseUrl || !apiKey) {
+              console.error(`Grok model probe skipped; using ${fallbackChoice}.`);
+              return {
+                requestedModel,
+                chosenModel: fallbackChoice,
+                availableModelCount: 0,
+              };
+            }
+
+            try {
+              const response = await fetch(`${baseUrl}/models`, {
+                headers: {
+                  Authorization: `Bearer ${apiKey}`,
+                },
+              });
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+              const payload = await response.json();
+              const availableModels = unique(
+                Array.isArray(payload?.data)
+                  ? payload.data.map((entry) => String(entry?.id ?? '').trim())
+                  : [],
+              );
+              const chosenModel = preferredModels.find((model) => availableModels.includes(model))
+                ?? availableModels.find((model) => /grok/i.test(model))
+                ?? fallbackChoice;
+              console.error(
+                `Resolved Grok model: requested=${requestedModel || '(empty)'} chosen=${chosenModel || '(empty)'} availableCount=${availableModels.length}`,
+              );
+              return {
+                requestedModel,
+                chosenModel,
+                availableModelCount: availableModels.length,
+              };
+            } catch (error) {
+              console.error(`Grok model probe failed; using ${fallbackChoice}. ${error?.message ?? error}`);
+              return {
+                requestedModel,
+                chosenModel: fallbackChoice,
+                availableModelCount: 0,
+              };
+            }
+          }
+
+          const probe = await resolveGrokModelMeta();
+          writeFileSync('.tmp/github-actions/grok-model-probe.json', JSON.stringify(probe, null, 2));
+          writeGithubKeyValue(process.env.GITHUB_ENV, 'GROK_RUNTIME_MODEL', probe.chosenModel);
+          writeGithubKeyValue(process.env.GITHUB_ENV, 'FETCH_SMOKE_REQUESTED_MODEL', probe.requestedModel);
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'requestedModel', probe.requestedModel);
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'chosenModel', probe.chosenModel);
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'availableModelCount', probe.availableModelCount);
+
+          const search = {
+            grok: {
+              apiUrl: process.env.GROK_BASE_URL,
+              apiKey: process.env.GROK_API_KEY,
+              model: probe.chosenModel,
+            },
+          };
+          writeFileSync('.tmp/github-actions/search.json', JSON.stringify(search, null, 2));
+
+          const openclaw = {
+            models: {
+              providers: {
+                'router-gpt': {
+                  baseUrl: '',
+                  apiKey: '',
+                  api: 'openai-responses',
+                  headers: {},
+                  authHeader: true,
+                  models: [],
+                },
+                'router-gpt-backup': {
+                  baseUrl: '',
+                  apiKey: '',
+                  api: 'openai-responses',
+                  headers: {},
+                  authHeader: true,
+                  models: [],
+                },
+                anyrouter: {
+                  baseUrl: '',
+                  apiKey: '',
+                  api: 'openai-compatible',
+                  headers: {},
+                  authHeader: true,
+                  models: [],
+                },
+              },
+            },
+          };
+          writeFileSync('.tmp/github-actions/openclaw.json', JSON.stringify(openclaw, null, 2));
+
+          const config = JSON.parse(readFileSync('config.example.json', 'utf8'));
+          config.sources.credentialFiles = {
+            search: './.tmp/github-actions/search.json',
+            openclaw: './.tmp/github-actions/openclaw.json',
+          };
+          config.runtime.pipeline = ['fetch'];
+
+          const fetchProfile = config.fetch?.profiles?.['grok-default'];
+          if (!fetchProfile || typeof fetchProfile !== 'object') {
+            throw new Error('Missing fetch profile: grok-default');
+          }
+          fetchProfile.timeoutMs = 75000;
+          fetchProfile.batchSize = 1;
+          fetchProfile.concurrency = 1;
+          fetchProfile.refetchMaxRounds = 0;
+          fetchProfile.refetchBatchSize = 1;
+          fetchProfile.refetchConcurrency = 1;
+          fetchProfile.retry = {
+            ...(fetchProfile.retry ?? {}),
+            maxAttempts: 1,
+            backoffMs: 3000,
+          };
+          fetchProfile.promptFile = 'assets/prompts/grok-fetch-live.txt';
+
+          const probeCsv = [
+            'handle,displayName,userPageUrl,followersCount,postCount,totalFavouritesByUser,isBlueVerified,verified',
+            'openai,OpenAI,https://x.com/openai,0,1,0,false,false',
+            'anthropicai,Anthropic,https://x.com/AnthropicAI,0,1,0,false,false',
+            'grok,Grok,https://x.com/grok,0,1,0,false,false',
+          ].join('\n');
+          writeFileSync('.tmp/github-actions/fetch-smoke.csv', `${probeCsv}\n`);
+          writeFileSync('config.fetch-smoke.generated.json', JSON.stringify(config, null, 2));
+          console.log(JSON.stringify(probe, null, 2));
+          console.error(`Using GROK_RUNTIME_MODEL=${probe.chosenModel || '(empty)'}`);
+          EOF
+
+      - name: Run fetch smoke
+        shell: bash
+        run: |
+          mkdir -p .tmp/github-actions
+          node scripts/run.mjs --mode fetch --config ./config.fetch-smoke.generated.json --seed-csv ./.tmp/github-actions/fetch-smoke.csv --skip-precheck > .tmp/github-actions/run-summary.json
+
+      - name: Build fetch smoke diagnosis
+        id: build-diagnosis
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module - <<'EOF'
+          import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+
+          function readJson(path) {
+            return JSON.parse(readFileSync(path, 'utf8'));
+          }
+
+          function tryReadJson(path) {
+            if (!path || !existsSync(path)) {
+              return null;
+            }
+            try {
+              return readJson(path);
+            } catch (error) {
+              console.error(`Failed to parse JSON at ${path}. ${error?.message ?? error}`);
+              return null;
+            }
+          }
+
+          function writeGithubKeyValue(filePath, key, value) {
+            appendFileSync(filePath, `${key}=${String(value ?? '')}\n`);
+          }
+
+          function resolveBaseUrlHost(value) {
+            try {
+              return value ? new URL(value).host : '';
+            } catch {
+              return '';
+            }
+          }
+
+          const summaryPath = '.tmp/github-actions/run-summary.json';
+          const summary = tryReadJson(summaryPath);
+          const fetchResultPath = summary?.fetch?.fetchResultPath ?? '';
+          const fetchRawPath = summary?.fetch?.fetchRawPath ?? '';
+          const fetchResult = tryReadJson(fetchResultPath);
+          const fetchRaw = tryReadJson(fetchRawPath);
+          const batches = Array.isArray(fetchRaw?.batches) ? fetchRaw.batches : [];
+          const timeoutCount = batches.filter((batch) => batch?.diagnostics?.classification === 'timeout').length;
+          const http500Count = batches.filter((batch) => Number(batch?.diagnostics?.httpStatus ?? 0) === 500).length;
+          const diagnosis = {
+            requestedModel: String(process.env.FETCH_SMOKE_REQUESTED_MODEL ?? process.env.GROK_MODEL ?? '').trim(),
+            chosenModel: String(process.env.GROK_RUNTIME_MODEL ?? '').trim(),
+            baseUrlHost: resolveBaseUrlHost(process.env.GROK_BASE_URL),
+            seedCount: Number(summary?.fetch?.seedCount ?? fetchResult?.meta?.seedCount ?? 0),
+            durationMs: Number(summary?.fetch?.durationMs ?? fetchResult?.meta?.durationMs ?? 0),
+            tweetCount: Number(fetchResult?.meta?.tweetCount ?? 0),
+            coveredAccountCount: Number(fetchResult?.meta?.coveredAccountCount ?? 0),
+            warningCount: Number(fetchResult?.meta?.warningCount ?? 0),
+            timeoutCount,
+            http500Count,
+          };
+
+          writeFileSync('.tmp/github-actions/fetch-smoke.diagnosis.json', JSON.stringify(diagnosis, null, 2));
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'fetchInputPath', summary?.fetch?.fetchInputPath ?? '');
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'fetchRawPath', summary?.fetch?.fetchRawPath ?? '');
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'fetchResultPath', summary?.fetch?.fetchResultPath ?? '');
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'fetchRawCsvPath', summary?.fetch?.fetchRawCsvPath ?? '');
+          writeGithubKeyValue(process.env.GITHUB_OUTPUT, 'fetchTweetIndexCsvPath', summary?.fetch?.fetchTweetIndexCsvPath ?? '');
+          console.log(JSON.stringify(diagnosis, null, 2));
+
+          const isMissingSummary = !summary?.fetch;
+          const isMissingModel = !diagnosis.chosenModel;
+          const isTransportUnhealthy = diagnosis.timeoutCount + diagnosis.http500Count >= 3;
+          const isZeroCoverage = diagnosis.tweetCount === 0 && diagnosis.coveredAccountCount === 0;
+          if (isMissingSummary || isMissingModel || isTransportUnhealthy || isZeroCoverage) {
+            if (isMissingSummary) {
+              console.error('::error::Fetch smoke failed because run-summary.json is missing or incomplete.');
+            }
+            if (isMissingModel) {
+              console.error('::error::Fetch smoke failed because chosenModel is empty.');
+            }
+            if (isTransportUnhealthy) {
+              console.error(`::error::Fetch smoke failed because timeoutCount + http500Count = ${diagnosis.timeoutCount + diagnosis.http500Count}.`);
+            }
+            if (isZeroCoverage) {
+              console.error('::error::Fetch smoke failed because tweetCount and coveredAccountCount are both zero.');
+            }
+            process.exitCode = 1;
+          }
+          EOF
+
+      - name: Upload fetch smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fetch-smoke-artifacts
+          if-no-files-found: warn
+          path: |
+            .tmp/github-actions/grok-model-probe.json
+            .tmp/github-actions/run-summary.json
+            .tmp/github-actions/fetch-smoke.diagnosis.json
+            .tmp/github-actions/fetch-smoke.csv
+            config.fetch-smoke.generated.json
+            ${{ steps.build-diagnosis.outputs.fetchInputPath }}
+            ${{ steps.build-diagnosis.outputs.fetchRawPath }}
+            ${{ steps.build-diagnosis.outputs.fetchResultPath }}
+            ${{ steps.build-diagnosis.outputs.fetchRawCsvPath }}
+            ${{ steps.build-diagnosis.outputs.fetchTweetIndexCsvPath }}
