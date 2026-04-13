@@ -1,11 +1,18 @@
 .ace-tool/
 .claude/
+.gh-cache/
 .tmp/
 data/
 config.json
 config.github-actions.generated.json
+config.fetch-smoke.generated.json
+config.live-probe*.json
+config.rerun*.json
 *.csv
+*.bak
 account-score.json
 claude code 执行日志-*.log
+x-summary.zip
 x-monitor 问题清单.txt
 需求文档.txt
+需求文档2026-03-26-1744.txt
