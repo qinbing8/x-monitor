@@ -265,8 +265,12 @@ jobs:
           const isMissingSummary = !summary?.fetch;
           const isMissingModel = !diagnosis.chosenModel;
           const isTransportUnhealthy = diagnosis.timeoutCount + diagnosis.http500Count >= 3;
-          const isZeroCoverage = diagnosis.tweetCount === 0 && diagnosis.coveredAccountCount === 0;
-          if (isMissingSummary || isMissingModel || isTransportUnhealthy || isZeroCoverage) {
+          const isZeroCoverageWithoutTransportSignal =
+            diagnosis.tweetCount === 0
+            && diagnosis.coveredAccountCount === 0
+            && diagnosis.timeoutCount === 0
+            && diagnosis.http500Count === 0;
+          if (isMissingSummary || isMissingModel || isTransportUnhealthy || isZeroCoverageWithoutTransportSignal) {
             if (isMissingSummary) {
               console.error('::error::Fetch smoke failed because run-summary.json is missing or incomplete.');
             }
@@ -276,8 +280,8 @@ jobs:
             if (isTransportUnhealthy) {
               console.error(`::error::Fetch smoke failed because timeoutCount + http500Count = ${diagnosis.timeoutCount + diagnosis.http500Count}.`);
             }
-            if (isZeroCoverage) {
-              console.error('::error::Fetch smoke failed because tweetCount and coveredAccountCount are both zero.');
+            if (isZeroCoverageWithoutTransportSignal) {
+              console.error('::error::Fetch smoke failed because tweetCount and coveredAccountCount are both zero without timeout/http500 signal.');
             }
             process.exitCode = 1;
           }

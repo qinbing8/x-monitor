@@ -41,6 +41,11 @@ test('fetch-smoke workflow keeps Grok smoke diagnostics isolated from daily-repo
   assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchResultPath', summary\?\.fetch\?\.fetchResultPath \?\? ''\)/);
   assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchRawCsvPath', summary\?\.fetch\?\.fetchRawCsvPath \?\? ''\)/);
   assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchTweetIndexCsvPath', summary\?\.fetch\?\.fetchTweetIndexCsvPath \?\? ''\)/);
+  assert.match(workflow, /const isZeroCoverageWithoutTransportSignal =/);
+  assert.match(workflow, /diagnosis\.tweetCount === 0/);
+  assert.match(workflow, /diagnosis\.coveredAccountCount === 0/);
+  assert.match(workflow, /diagnosis\.timeoutCount === 0/);
+  assert.match(workflow, /diagnosis\.http500Count === 0/);
   assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchInputPath'/);
   assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchRawPath'/);
   assert.match(workflow, /writeGithubKeyValue\(process\.env\.GITHUB_OUTPUT,\s+'fetchResultPath'/);
