@@ -654,6 +654,7 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
         extraHeaders: profile.provider.headers,
         authHeader: profile.provider.authHeader,
         model: profile.modelId,
+        reasoningEffort: profile.reasoningEffort,
         timeoutMs: profile.timeoutMs,
         temperature: profile.temperature,
         maxTokens: Math.min(profile.maxOutputTokens ?? MAX_ROSTER_SCORE_OUTPUT_TOKENS, MAX_ROSTER_SCORE_OUTPUT_TOKENS),

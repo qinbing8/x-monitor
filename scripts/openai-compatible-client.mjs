@@ -70,6 +70,11 @@ function normalizeApiProtocol(apiProtocol) {
     : 'openai-completions';
 }
 
+function normalizeReasoningEffort(reasoningEffort) {
+  const value = String(reasoningEffort ?? '').trim().toLowerCase();
+  return value || null;
+}
+
 function normalizeBaseUrl(baseUrl) {
   const rawValue = String(baseUrl ?? '').trim();
   if (!rawValue) return rawValue;
@@ -411,6 +416,7 @@ export async function postChatCompletions({
   apiKey,
   apiProtocol,
   model,
+  reasoningEffort,
   messages,
   timeoutMs,
   temperature,
@@ -427,11 +433,13 @@ export async function postChatCompletions({
   const startMs = Date.now();
   const messageCount = Array.isArray(messages) ? messages.length : 0;
   const resolvedApiProtocol = normalizeApiProtocol(apiProtocol);
+  const resolvedReasoningEffort = normalizeReasoningEffort(reasoningEffort);
   const requestUrl = resolveRequestUrl(baseUrl, resolvedApiProtocol);
   logger?.debug('llm_request_start', {
     operationName,
     model,
     apiProtocol: resolvedApiProtocol,
+    reasoningEffort: resolvedReasoningEffort,
     messageCount,
     timeoutMs,
     maxTokens,
@@ -447,6 +455,7 @@ export async function postChatCompletions({
             model,
             input: normalizeResponsesInput(messages),
             temperature,
+            ...(resolvedReasoningEffort ? { reasoning: { effort: resolvedReasoningEffort } } : {}),
             max_output_tokens: maxTokens,
             stream,
           }

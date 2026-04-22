@@ -13,7 +13,7 @@ export const FIXTURE_OPENCLAW = {
           'User-Agent': 'curl/8.0',
         },
         authHeader: true,
-        models: [{ id: 'gpt-5.4-xhigh' }, { id: 'gpt-5.4' }],
+        models: [{ id: 'gpt-5.4' }],
       },
       'router-gpt-backup': {
         baseUrl: 'https://gpt-backup.example/v1',
@@ -258,7 +258,7 @@ export async function createMockSkillFixture() {
       },
     },
     models: {
-      'gpt-main': { providerRef: 'gpt', modelId: 'gpt-5.4-xhigh' },
+      'gpt-main': { providerRef: 'gpt', modelId: 'gpt-5.4', reasoningEffort: 'xhigh' },
       'gpt-main-mini': { providerRef: 'gpt', modelId: 'gpt-5.4' },
       'claude-main': { providerRef: 'claude', modelId: 'claude-sonnet-4-6' },
     },

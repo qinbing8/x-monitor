@@ -268,6 +268,7 @@ function resolveStageAnalysisProfile(config, sourceDocs, baseProfile, modelRefOv
     provider,
     modelRef: effectiveModelRef,
     modelId: modelDef.modelId,
+    reasoningEffort: modelDef.reasoningEffort ?? null,
   };
 }
 
@@ -454,6 +455,7 @@ async function summarizeDigestItemsForBrief({ runDate, digestItems, signalItems,
           extraHeaders: profile.provider.headers,
           authHeader: profile.provider.authHeader,
           model: profile.modelId,
+          reasoningEffort: profile.reasoningEffort,
           timeoutMs,
           temperature: 0,
           maxTokens: Math.min(profile.maxOutputTokens ?? MAX_DIGEST_SUMMARY_OUTPUT_TOKENS, MAX_DIGEST_SUMMARY_OUTPUT_TOKENS),
@@ -704,6 +706,7 @@ async function screenSignalTweetsWithModel({ runDate, signalItems, profile, fetc
           extraHeaders: profile.provider.headers,
           authHeader: profile.provider.authHeader,
           model: profile.modelId,
+          reasoningEffort: profile.reasoningEffort,
           timeoutMs,
           temperature: 0,
           maxTokens: Math.min(profile.maxOutputTokens ?? MAX_SCREENING_OUTPUT_TOKENS, MAX_SCREENING_OUTPUT_TOKENS),
@@ -1076,9 +1079,7 @@ async function finalizeAnalyzeRun({
       logger: logger.child('continuation'),
     });
   } catch (error) {
-    const fallbackProfile = briefFallbackProfile && briefFallbackProfile.modelId !== profile.modelId
-      ? briefFallbackProfile
-      : null;
+    const fallbackProfile = briefFallbackProfile;
     if (fallbackProfile) {
       logger.warn('analyze_final_draft_primary_failed_retrying_fallback', {
         runDate,
@@ -1724,6 +1725,7 @@ export async function runAnalysisWithContinuation({ profile, messages, fetchImpl
           extraHeaders: profile.provider.headers,
           authHeader: profile.provider.authHeader,
           model: profile.modelId,
+          reasoningEffort: profile.reasoningEffort,
           timeoutMs,
           temperature: profile.temperature,
           maxTokens: Math.min(profile.maxOutputTokens ?? MAX_ANALYZE_OUTPUT_TOKENS, MAX_ANALYZE_OUTPUT_TOKENS),

@@ -90,6 +90,7 @@ test('postChatCompletions routes openai-responses requests to /responses and ext
     apiKey: 'test-key',
     apiProtocol: 'openai-responses',
     model: 'gpt-test',
+    reasoningEffort: 'xhigh',
     messages: [{ role: 'user', content: 'hello' }],
     timeoutMs: 5000,
     temperature: 0,
@@ -118,6 +119,7 @@ test('postChatCompletions routes openai-responses requests to /responses and ext
 
   assert.equal(requestUrl, 'https://example.com/v1/responses');
   assert.deepEqual(requestBody.input, [{ role: 'user', content: 'hello' }]);
+  assert.deepEqual(requestBody.reasoning, { effort: 'xhigh' });
   assert.equal(requestBody.max_output_tokens, 32);
   assert.equal(completion.text, 'world');
   assert.equal(completion.diagnostics.finishReason, 'stop');

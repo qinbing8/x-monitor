@@ -52,5 +52,6 @@ export function resolveAnalysisProfile(config, sourceDocs, profileName) {
     ...profile,
     provider,
     modelId: modelDef.modelId,
+    reasoningEffort: modelDef.reasoningEffort ?? profile.reasoningEffort ?? null,
   };
 }

@@ -168,7 +168,8 @@
   "models": {
     "gpt-main": {
       "providerRef": "gpt",
-      "modelId": "gpt-5.4-xhigh"
+      "modelId": "gpt-5.4",
+      "reasoningEffort": "xhigh"
     },
     "gpt-main-mini": {
       "providerRef": "gpt",
