@@ -197,6 +197,7 @@ export async function createMockSkillFixture() {
         'gpt-default': {
           providerRef: 'gpt',
           modelRef: 'gpt-main',
+          briefFallbackModelRef: 'gpt-main-mini',
           rosterModelRef: 'gpt-main-mini',
           screeningModelRef: 'gpt-main-mini',
           apiProtocol: 'openai-compatible',

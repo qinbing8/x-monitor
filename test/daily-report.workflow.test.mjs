@@ -16,3 +16,12 @@ test('daily-report workflow keeps live fetch overrides bounded for GitHub Action
   assert.match(workflow, /fetchProfile\.refetchBatchSize = 1;/);
   assert.match(workflow, /fetchProfile\.refetchConcurrency = 5;/);
 });
+
+test('daily-report workflow wires independent fallback brief model secrets into runtime config', async () => {
+  const workflow = await readUtf8('../.github/workflows/daily-report.yml');
+
+  assert.match(workflow, /OPENAI_BRIEF_FALLBACK_MODEL: \$\{\{ secrets\.OPENAI_BRIEF_FALLBACK_MODEL \}\}/);
+  assert.match(workflow, /Using OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL=/);
+  assert.match(workflow, /'gpt-brief-fallback': \{/);
+  assert.match(workflow, /briefFallbackModelRef = 'gpt-brief-fallback';/);
+});

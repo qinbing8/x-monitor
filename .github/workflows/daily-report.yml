@@ -20,6 +20,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       OPENAI_BRIEF_MODEL: ${{ secrets.OPENAI_BRIEF_MODEL }}
+      OPENAI_BRIEF_FALLBACK_MODEL: ${{ secrets.OPENAI_BRIEF_FALLBACK_MODEL }}
       OPENAI_SCREENING_MODEL: ${{ secrets.OPENAI_SCREENING_MODEL }}
       OPENAI_ROSTER_MODEL: ${{ secrets.OPENAI_ROSTER_MODEL }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -126,6 +127,13 @@ jobs:
           )"
           echo "Using OPENAI_BRIEF_RUNTIME_MODEL=${OPENAI_BRIEF_RUNTIME_MODEL}"
 
+          OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL="$(node --input-type=module - <<'EOF'
+          const normalized = String(process.env.OPENAI_BRIEF_FALLBACK_MODEL ?? '').trim();
+          process.stdout.write(normalized || 'gpt-5.4');
+          EOF
+          )"
+          echo "Using OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL=${OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL}"
+
           cat > .tmp/github-actions/search.json <<EOF
           {
             "grok": {
@@ -148,6 +156,7 @@ jobs:
                   "authHeader": true,
                   "models": [
                     { "id": "${OPENAI_BRIEF_RUNTIME_MODEL}" },
+                    { "id": "${OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL}" },
                     { "id": "${OPENAI_SCREENING_MODEL}" },
                     { "id": "${OPENAI_ROSTER_MODEL}" }
                   ]
@@ -179,6 +188,10 @@ jobs:
               modelId: briefModelId,
               reasoningEffort: 'xhigh',
             },
+            'gpt-brief-fallback': {
+              providerRef: 'gpt',
+              modelId: String(process.env.OPENAI_BRIEF_FALLBACK_MODEL ?? '').trim() || 'gpt-5.4',
+            },
             'gpt-screening': {
               providerRef: 'gpt',
               modelId: process.env.OPENAI_SCREENING_MODEL,
@@ -189,7 +202,7 @@ jobs:
             },
           };
           config.analysis.profiles['gpt-default'].modelRef = 'gpt-brief';
-          config.analysis.profiles['gpt-default'].briefFallbackModelRef = 'gpt-screening';
+          config.analysis.profiles['gpt-default'].briefFallbackModelRef = 'gpt-brief-fallback';
           config.analysis.profiles['gpt-default'].screeningModelRef = 'gpt-screening';
           config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-roster';
           const fetchProfile = config.fetch?.profiles?.['grok-default'];

@@ -8,7 +8,7 @@ import { runRosterScoring } from './roster.mjs';
 import { postChatCompletions, withRetry } from './openai-compatible-client.mjs';
 import { mapWithConcurrency } from './parallel.mjs';
 
-const MIN_ANALYZE_TIMEOUT_MS = 300000;
+const MIN_ANALYZE_TIMEOUT_MS = 480000;
 const MIN_TOTAL_ACCOUNTS_FOR_QUALITY_GATE = 10;
 const MIN_HEALTHY_COVERED_ACCOUNTS = 3;
 const MIN_HEALTHY_TWEETS = 12;
@@ -904,6 +904,7 @@ function buildAnalyzeInputArtifact({
   runDate,
   timeoutMs,
   profile,
+  briefFallbackModelId,
   rosterModelId,
   screeningModelId,
   digestItems,
@@ -926,6 +927,7 @@ function buildAnalyzeInputArtifact({
       timeoutMs,
       promptItemCount: digestItems.length,
       omittedSignalTweetCount,
+      briefFallbackModel: briefFallbackModelId ?? null,
       rosterModel: rosterModelId,
       screeningModel: screeningModelId,
       briefModel: profile.modelId,
@@ -949,10 +951,55 @@ function buildAnalyzeInputArtifact({
   };
 }
 
+function buildFinalDraftErrorDetails(error) {
+  return {
+    classification: error?.llmRequestDiagnostics?.classification ?? 'unknown',
+    name: typeof error?.name === 'string' ? error.name : null,
+    message: typeof error?.message === 'string' ? error.message : String(error),
+    code: error?.llmRequestDiagnostics?.errorCode ?? (error?.code ? String(error.code) : null),
+    httpStatus: error?.llmRequestDiagnostics?.httpStatus ?? null,
+    latencyMs: error?.llmRequestDiagnostics?.latencyMs ?? null,
+    operationName: error?.llmRequestDiagnostics?.operationName ?? error?.retryDiagnostics?.operationName ?? null,
+    targetHost: error?.llmRequestDiagnostics?.targetHost ?? null,
+    targetPath: error?.llmRequestDiagnostics?.targetPath ?? null,
+    causeChain: Array.isArray(error?.llmRequestDiagnostics?.causeChain) ? error.llmRequestDiagnostics.causeChain : [],
+    retry: error?.retryDiagnostics ?? null,
+    continuation: error?.analysisContinuationDiagnostics ?? null,
+  };
+}
+
+function formatFinalDraftFailureSummary(errorDetails) {
+  if (!errorDetails) return null;
+  const classification = String(errorDetails.classification ?? '').trim();
+  const message = String(errorDetails.message ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const parts = [];
+  if (classification) parts.push(classification);
+  if (message) parts.push(message);
+  return parts.join(' | ').slice(0, 220) || null;
+}
+
+function buildFinalDraftAttemptRecord({ kind, profile, status, result = null, error = null } = {}) {
+  const errorDetails = error ? buildFinalDraftErrorDetails(error) : null;
+  return {
+    kind,
+    model: profile?.modelId ?? null,
+    reasoningEffort: profile?.reasoningEffort ?? null,
+    status,
+    durationMs: Number(result?.durationMs ?? errorDetails?.continuation?.durationMs ?? errorDetails?.latencyMs ?? 0) || 0,
+    continuationRounds: Number(result?.continuationRounds ?? errorDetails?.continuation?.completedContinuationRounds ?? 0) || 0,
+    truncated: result?.truncated === true,
+    error: errorDetails,
+    errorSummary: formatFinalDraftFailureSummary(errorDetails),
+  };
+}
+
 function buildFinalDraftFailureArtifact({
   runDate,
   analyzeInputPath,
   profile,
+  briefFallbackModelId,
   timeoutMs,
   items,
   accounts,
@@ -973,6 +1020,7 @@ function buildFinalDraftFailureArtifact({
   renderedPrompt,
   coverage,
   fetchDiagnosis,
+  finalDraftAttempts = [],
   error,
 } = {}) {
   return {
@@ -983,6 +1031,7 @@ function buildFinalDraftFailureArtifact({
     analysisProfile: profile.name,
     provider: profile.providerRef,
     briefModel: profile.modelId,
+    briefFallbackModel: briefFallbackModelId ?? null,
     rosterModel: rosterModelId,
     screeningModel: screeningModelId,
     timeoutMs,
@@ -1004,22 +1053,10 @@ function buildFinalDraftFailureArtifact({
     summaryItemCount: chunkSummaries.length,
     coverage,
     fetchDiagnosis,
+    finalDraftAttempts,
     rosterScoring,
     rosterScoringError: rosterScoringError ?? null,
-    error: {
-      classification: error?.llmRequestDiagnostics?.classification ?? 'unknown',
-      name: typeof error?.name === 'string' ? error.name : null,
-      message: typeof error?.message === 'string' ? error.message : String(error),
-      code: error?.llmRequestDiagnostics?.errorCode ?? (error?.code ? String(error.code) : null),
-      httpStatus: error?.llmRequestDiagnostics?.httpStatus ?? null,
-      latencyMs: error?.llmRequestDiagnostics?.latencyMs ?? null,
-      operationName: error?.llmRequestDiagnostics?.operationName ?? error?.retryDiagnostics?.operationName ?? null,
-      targetHost: error?.llmRequestDiagnostics?.targetHost ?? null,
-      targetPath: error?.llmRequestDiagnostics?.targetPath ?? null,
-      causeChain: Array.isArray(error?.llmRequestDiagnostics?.causeChain) ? error.llmRequestDiagnostics.causeChain : [],
-      retry: error?.retryDiagnostics ?? null,
-      continuation: error?.analysisContinuationDiagnostics ?? null,
-    },
+    error: buildFinalDraftErrorDetails(error),
   };
 }
 
@@ -1069,6 +1106,10 @@ async function finalizeAnalyzeRun({
   let continuationResult;
   let failureSummary = null;
   let effectiveBriefProfile = profile;
+  const finalDraftAttempts = [];
+  let primaryFailure = null;
+  let primaryBriefFailureSummary = null;
+  let usedFallbackModel = false;
   try {
     continuationResult = await runAnalysisWithContinuation({
       profile,
@@ -1078,7 +1119,21 @@ async function finalizeAnalyzeRun({
       maxContinuations: profile.maxContinuations ?? 2,
       logger: logger.child('continuation'),
     });
+    finalDraftAttempts.push(buildFinalDraftAttemptRecord({
+      kind: 'primary',
+      profile,
+      status: 'succeeded',
+      result: continuationResult,
+    }));
   } catch (error) {
+    primaryFailure = buildFinalDraftErrorDetails(error);
+    primaryBriefFailureSummary = formatFinalDraftFailureSummary(primaryFailure);
+    finalDraftAttempts.push(buildFinalDraftAttemptRecord({
+      kind: 'primary',
+      profile,
+      status: 'failed',
+      error,
+    }));
     const fallbackProfile = briefFallbackProfile;
     if (fallbackProfile) {
       logger.warn('analyze_final_draft_primary_failed_retrying_fallback', {
@@ -1086,6 +1141,7 @@ async function finalizeAnalyzeRun({
         analysisProfile: profile.name,
         primaryModel: profile.modelId,
         fallbackModel: fallbackProfile.modelId,
+        errorSummary: primaryBriefFailureSummary,
         error: error?.message ?? String(error),
       });
       try {
@@ -1098,11 +1154,33 @@ async function finalizeAnalyzeRun({
           logger: logger.child('continuation_fallback'),
         });
         effectiveBriefProfile = fallbackProfile;
+        usedFallbackModel = true;
+        finalDraftAttempts.push(buildFinalDraftAttemptRecord({
+          kind: 'fallback',
+          profile: fallbackProfile,
+          status: 'succeeded',
+          result: continuationResult,
+        }));
+        logger.warn('analyze_final_draft_fallback_succeeded', {
+          runDate,
+          analysisProfile: profile.name,
+          primaryModel: profile.modelId,
+          fallbackModel: fallbackProfile.modelId,
+          primaryFailureSummary: primaryBriefFailureSummary,
+          finalDraftDurationMs: continuationResult.durationMs,
+        });
       } catch (fallbackError) {
+        finalDraftAttempts.push(buildFinalDraftAttemptRecord({
+          kind: 'fallback',
+          profile: fallbackProfile,
+          status: 'failed',
+          error: fallbackError,
+        }));
         const failureArtifact = buildFinalDraftFailureArtifact({
           runDate,
           analyzeInputPath,
           profile: fallbackProfile,
+          briefFallbackModelId: fallbackProfile.modelId,
           timeoutMs,
           items,
           accounts,
@@ -1123,6 +1201,7 @@ async function finalizeAnalyzeRun({
           renderedPrompt,
           coverage,
           fetchDiagnosis,
+          finalDraftAttempts,
           error: fallbackError,
         });
         let analyzeErrorPath = null;
@@ -1164,6 +1243,7 @@ async function finalizeAnalyzeRun({
         runDate,
         analyzeInputPath,
         profile,
+        briefFallbackModelId: briefFallbackProfile?.modelId ?? null,
         timeoutMs,
         items,
         accounts,
@@ -1184,6 +1264,7 @@ async function finalizeAnalyzeRun({
         renderedPrompt,
         coverage,
         fetchDiagnosis,
+        finalDraftAttempts,
         error,
       });
       let analyzeErrorPath = null;
@@ -1252,6 +1333,12 @@ async function finalizeAnalyzeRun({
         ? '> 终稿模型返回了结构过弱的正文，以下内容基于已完成的抓取、筛选与摘要结果自动整理。'
         : null),
     }), quality);
+  } else if (usedFallbackModel) {
+    answerSource = 'fallback_model';
+    const fallbackModelNotice = primaryBriefFailureSummary
+      ? `> 本稿由 fallback 模型生成。主终稿模型失败摘要：${primaryBriefFailureSummary}`
+      : '> 本稿由 fallback 模型生成。';
+    finalMarkdown = injectMarkdownNotices(finalMarkdown, [fallbackModelNotice]);
   }
   const analyzeDurationMs = Date.now() - startedAt;
   const analyzeResult = {
@@ -1267,9 +1354,14 @@ async function finalizeAnalyzeRun({
       promptSignalTweetCount: digestItems.length,
       omittedSignalTweetCount,
       noiseTweetCount: noiseItems.length,
+      primaryBriefModel: profile.modelId,
+      briefFallbackModel: briefFallbackProfile?.modelId ?? null,
       rosterModel: rosterModelId,
       screeningModel: screeningModelId,
       briefModel: effectiveBriefProfile.modelId,
+      generatedByFallbackModel: usedFallbackModel && answerSource === 'fallback_model',
+      primaryBriefFailure: primaryFailure,
+      primaryBriefFailureSummary,
       candidateSelectionMode: digestSelection.mode,
       screeningChunkCount: digestSelection.screeningChunkCount,
       screeningCandidateCount: digestSelection.screeningCandidateCount,
@@ -1278,6 +1370,7 @@ async function finalizeAnalyzeRun({
       summaryChunkCount,
       summaryFailedChunkCount,
       summaryItemCount: chunkSummaries.length,
+      finalDraftAttempts,
       continuationRounds: continuationResult.continuationRounds,
       truncated: continuationResult.truncated,
       finalDraftDurationMs: continuationResult.durationMs,
@@ -1289,6 +1382,16 @@ async function finalizeAnalyzeRun({
     },
     answer: {
       source: answerSource,
+      generatedBy: answerSource === 'fallback_model'
+        ? 'fallback_model'
+        : answerSource === 'fallback'
+          ? 'structured_fallback'
+          : 'primary_model',
+      note: usedFallbackModel && answerSource === 'fallback_model'
+        ? primaryBriefFailureSummary
+          ? `本稿由 fallback 模型生成。主终稿模型失败摘要：${primaryBriefFailureSummary}`
+          : '本稿由 fallback 模型生成。'
+        : null,
       markdown: finalMarkdown,
     },
     quality,
@@ -1306,6 +1409,7 @@ async function finalizeAnalyzeRun({
     continuationRounds: continuationResult.continuationRounds,
     truncated: continuationResult.truncated,
     finalDraftDurationMs: continuationResult.durationMs,
+    finalDraftAttempts,
     durationMs: analyzeDurationMs,
   });
   return {
@@ -1317,6 +1421,7 @@ async function finalizeAnalyzeRun({
     tweetCount: items.length,
     rosterScoring,
     finalDraftDurationMs: continuationResult.durationMs,
+    finalDraftAttempts,
     analyzeDurationMs,
   };
 }
@@ -1590,11 +1695,21 @@ export function injectQualityBanner(markdown, quality) {
 
   const icon = quality.status === 'empty' ? '🟥' : '⚠️';
   const banner = `> ${icon} ${quality.note}`;
+  return injectMarkdownNotices(text, [banner]);
+}
+
+function injectMarkdownNotices(markdown, notices = []) {
+  const text = String(markdown ?? '').trim();
+  if (!text) return text;
+  const safeNotices = (Array.isArray(notices) ? notices : [])
+    .map((entry) => String(entry ?? '').trim())
+    .filter(Boolean);
+  if (safeNotices.length === 0) return text;
   const lines = text.split(/\r?\n/);
   if (lines[0]?.startsWith('# ')) {
-    return [lines[0], '', banner, ...lines.slice(1)].join('\n').replace(/\n{3,}/g, '\n\n');
+    return [lines[0], '', ...safeNotices, ...lines.slice(1)].join('\n').replace(/\n{3,}/g, '\n\n');
   }
-  return `${banner}\n\n${text}`;
+  return `${safeNotices.join('\n')}\n\n${text}`;
 }
 
 function countSubstantiveBriefLines(markdown) {
@@ -1831,6 +1946,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
       runDate,
       timeoutMs: effectiveTimeoutMs,
       profile,
+      briefFallbackModelId: briefFallbackProfile?.modelId ?? null,
       rosterModelId,
       screeningModelId,
       digestItems: prepared.digestItems,

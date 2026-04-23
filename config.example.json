@@ -78,7 +78,7 @@
         "rosterModelRef": "gpt-main-mini",
         "screeningModelRef": "gpt-main-mini",
         "apiProtocol": "openai-compatible",
-        "timeoutMs": 180000,
+        "timeoutMs": 480000,
         "retry": {
           "maxAttempts": 2,
           "backoffMs": 2500
@@ -93,7 +93,7 @@
         "providerRef": "claude",
         "modelRef": "claude-main",
         "apiProtocol": "openai-compatible",
-        "timeoutMs": 180000,
+        "timeoutMs": 480000,
         "retry": {
           "maxAttempts": 2,
           "backoffMs": 2500

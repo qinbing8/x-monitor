@@ -34,8 +34,9 @@ test('repo analysis profiles keep timeout above the known live-run failure thres
   const exampleConfig = await readJson(fileURLToPath(new URL('../config.example.json', import.meta.url)));
 
   for (const [label, config] of [['config.json', repoConfig], ['config.example.json', exampleConfig]]) {
-    assert.ok(config.analysis.profiles['gpt-default'].timeoutMs > 90000, `${label} gpt-default timeoutMs must stay above 90000ms`);
-    assert.ok(config.analysis.profiles['claude-default'].timeoutMs > 90000, `${label} claude-default timeoutMs must stay above 90000ms`);
+    assert.ok(config.analysis.profiles['gpt-default'].timeoutMs >= 480000, `${label} gpt-default timeoutMs must stay at or above 480000ms`);
+    assert.ok(config.analysis.profiles['claude-default'].timeoutMs >= 480000, `${label} claude-default timeoutMs must stay at or above 480000ms`);
+    assert.equal(config.analysis.profiles['gpt-default'].briefFallbackModelRef, 'gpt-main-mini');
     assert.equal(config.analysis.profiles['gpt-default'].rosterModelRef, 'gpt-main-mini');
     assert.equal(config.analysis.profiles['gpt-default'].screeningModelRef, 'gpt-main-mini');
     assert.equal(config.models['gpt-main-mini'].providerRef, 'gpt');
@@ -84,6 +85,10 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
     assert.ok(analyzeResult.meta.finalDraftDurationMs >= 0);
     assert.ok(analyzeResult.meta.analyzeDurationMs >= analyzeResult.meta.finalDraftDurationMs);
+    assert.equal(analyzeResult.meta.generatedByFallbackModel, false);
+    assert.equal(analyzeResult.meta.primaryBriefFailure, null);
+    assert.equal(analyzeResult.meta.finalDraftAttempts.length, 1);
+    assert.equal(analyzeResult.meta.finalDraftAttempts[0].status, 'succeeded');
     assert.equal(analyzeResult.answer.source, 'model');
     assert.equal(analyzeResult.answer.markdown, FIXTURE_ANALYZE_MARKDOWN);
     assert.equal(analyzeResult.quality.needsReview, false);
@@ -534,8 +539,16 @@ test('runAnalyze retries final draft with a fallback brief model when the primar
     });
 
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
-    assert.equal(analyzeResult.answer.source, 'model');
+    assert.equal(analyzeResult.answer.source, 'fallback_model');
     assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4');
+    assert.equal(analyzeResult.meta.generatedByFallbackModel, true);
+    assert.match(analyzeResult.meta.primaryBriefFailureSummary, /Service temporarily unavailable/);
+    assert.equal(analyzeResult.meta.finalDraftAttempts.length, 2);
+    assert.equal(analyzeResult.meta.finalDraftAttempts[0].status, 'failed');
+    assert.equal(analyzeResult.meta.finalDraftAttempts[0].reasoningEffort, 'xhigh');
+    assert.equal(analyzeResult.meta.finalDraftAttempts[1].status, 'succeeded');
+    assert.equal(analyzeResult.meta.finalDraftAttempts[1].reasoningEffort, null);
+    assert.match(analyzeResult.answer.note, /本稿由 fallback 模型生成/);
     assert.equal(requests.length, 2);
     assert.equal(requests[0].model, 'gpt-5.4');
     assert.equal(requests[0].reasoning?.effort, 'xhigh');
@@ -543,7 +556,9 @@ test('runAnalyze retries final draft with a fallback brief model when the primar
     assert.equal(requests[1].reasoning, undefined);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
-    assert.equal(finalReport, FIXTURE_ANALYZE_MARKDOWN);
+    assert.match(finalReport, /本稿由 fallback 模型生成/);
+    assert.match(finalReport, /Service temporarily unavailable/);
+    assert.match(finalReport, /X 日报 \| 2026-03-23/);
   } finally {
     await fixture.cleanup();
   }

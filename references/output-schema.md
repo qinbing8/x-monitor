@@ -186,9 +186,26 @@ alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven develop
   "meta": {
     "analysisProfile": "gpt-default",
     "provider": "gpt",
-    "model": "gpt-5.4-xhigh",
+    "model": "gpt-5.4",
     "analyzedAt": "ISO-8601",
     "analyzeInputPath": "C:/.../analyze.input.json",
+    "primaryBriefModel": "gpt-5.4",
+    "briefFallbackModel": "gpt-5.4",
+    "generatedByFallbackModel": false,
+    "primaryBriefFailureSummary": null,
+    "finalDraftAttempts": [
+      {
+        "kind": "primary",
+        "model": "gpt-5.4",
+        "reasoningEffort": "xhigh",
+        "status": "succeeded",
+        "durationMs": 84213,
+        "continuationRounds": 0,
+        "truncated": false,
+        "error": null,
+        "errorSummary": null
+      }
+    ],
     "tweetCount": 18,
     "coverage": {
       "totalAccountCount": 24,
@@ -199,6 +216,9 @@ alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven develop
     }
   },
   "answer": {
+    "source": "model",
+    "generatedBy": "primary_model",
+    "note": null,
     "markdown": "# X 日报 | 2026-03-23\n..."
   },
   "quality": {
