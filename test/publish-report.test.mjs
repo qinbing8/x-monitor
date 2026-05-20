@@ -23,6 +23,17 @@ test('renderMarkdownDocument converts report markdown into readable HTML', () =>
   assert.match(html, /<h2 id="今日要点摘要deep-brief">今日要点摘要（Deep Brief）<\/h2>/);
   assert.match(html, /<code>@alice<\/code>/);
   assert.match(html, /<a href="https:\/\/x\.com\/alice\/status\/190001">https:\/\/x\.com\/alice\/status\/190001<\/a>/);
+  assert.match(html, /<main class="report-shell">/);
+  assert.match(html, /<article class="report-document">/);
+  assert.match(html, /font-family: Charter, "PingFang SC"/);
+  assert.match(html, /@page \{ size: A4; margin: 20mm 22mm 22mm; \}/);
+});
+
+test('renderMarkdownDocument converts bold inline markdown', () => {
+  const html = renderMarkdownDocument('- **Gemma 4** 是今天最明确的模型发布信号。');
+
+  assert.match(html, /<strong>Gemma 4<\/strong> 是今天最明确的模型发布信号。/);
+  assert.doesNotMatch(html, /\*\*Gemma 4\*\*/);
 });
 
 test('mergeIndexEntries keeps newest entry first and deduplicates by date and runId', () => {

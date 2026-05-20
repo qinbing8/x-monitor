@@ -26,6 +26,7 @@ function slugifyHeading(text) {
 function renderInlineMarkdown(text) {
   const codeTokens = [];
   const linkTokens = [];
+  const strongTokens = [];
   let rendered = String(text ?? '')
     .replace(/`([^`]+)`/g, (_, code) => {
       const token = `@@CODE${codeTokens.length}@@`;
@@ -38,12 +39,19 @@ function renderInlineMarkdown(text) {
       return token;
     });
 
+  rendered = rendered.replace(/\*\*([^*]+)\*\*/g, (_, strongText) => {
+    const token = `@@STRONG${strongTokens.length}@@`;
+    strongTokens.push(`<strong>${escapeHtml(strongText)}</strong>`);
+    return token;
+  });
+
   rendered = escapeHtml(rendered).replace(
     /(https?:\/\/[^\s<]+)/g,
     (match) => `<a href="${match}">${match}</a>`,
   );
 
   rendered = rendered
+    .replace(/@@STRONG(\d+)@@/g, (_, index) => strongTokens[Number(index)] ?? '')
     .replace(/@@CODE(\d+)@@/g, (_, index) => codeTokens[Number(index)] ?? '')
     .replace(/@@LINK(\d+)@@/g, (_, index) => linkTokens[Number(index)] ?? '');
 
@@ -60,6 +68,36 @@ function closeListIfNeeded(state, output) {
   if (!state.inList) return;
   output.push('</ul>');
   state.inList = false;
+}
+
+function renderReportStyles() {
+  return [
+    ':root { color-scheme: light; --page-bg: #ece7dc; --paper: #fffefa; --ink: #181613; --muted: #6f665b; --rule: #ded6ca; --rule-strong: #b9aa98; --accent: #1f5f8f; }',
+    '* { box-sizing: border-box; }',
+    'html { background: var(--page-bg); }',
+    'body { margin: 0; background: var(--page-bg); color: var(--ink); font-family: Charter, "PingFang SC", "Noto Serif SC", "Source Han Serif SC", Georgia, serif; text-rendering: optimizeLegibility; }',
+    '.report-shell { width: min(100%, 980px); margin: 0 auto; padding: 32px 24px 56px; }',
+    '.report-document { max-width: 820px; min-height: calc(100vh - 88px); margin: 0 auto; padding: 58px 64px 72px; background: var(--paper); border: 1px solid var(--rule); box-shadow: 0 18px 50px rgba(31, 28, 24, 0.12); }',
+    'h1, h2, h3 { color: #12100d; font-family: "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", Charter, Georgia, serif; font-weight: 700; line-height: 1.25; }',
+    'h1 { margin: 0 0 1.8rem; padding-bottom: 1rem; border-bottom: 2px solid #181613; font-size: 2.35rem; }',
+    'h2 { margin: 2.7rem 0 1rem; padding-top: 1.1rem; border-top: 1px solid var(--rule-strong); font-size: 1.32rem; }',
+    'h2:first-of-type { margin-top: 2rem; }',
+    'h3 { margin: 1.8rem 0 0.7rem; font-size: 1.12rem; }',
+    'p, li { font-size: 1.02rem; line-height: 1.82; }',
+    'p { margin: 0 0 1rem; }',
+    'ul { margin: 0 0 1.35rem; padding-left: 1.25rem; }',
+    'li { margin: 0.42rem 0; padding-left: 0.2rem; }',
+    'li::marker { color: var(--accent); }',
+    'strong { color: #111; font-weight: 700; }',
+    'code { padding: 0.08rem 0.28rem; border: 1px solid #e2d8c9; border-radius: 4px; background: #f3eddf; font-family: Menlo, "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 0.92em; overflow-wrap: anywhere; }',
+    'pre { overflow-x: auto; margin: 1.1rem 0 1.35rem; padding: 16px 18px; border-radius: 8px; background: #201b16; color: #f7f0e6; }',
+    'pre code { padding: 0; border: 0; background: transparent; color: inherit; }',
+    'a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.16em; overflow-wrap: anywhere; }',
+    'a:hover { text-decoration-thickness: 2px; }',
+    '@page { size: A4; margin: 20mm 22mm 22mm; }',
+    '@media (max-width: 720px) { .report-shell { padding: 0; } .report-document { min-height: 100vh; padding: 32px 20px 52px; border: 0; box-shadow: none; } h1 { font-size: 1.75rem; } h2 { margin-top: 2rem; font-size: 1.18rem; } p, li { font-size: 1rem; } }',
+    '@media print { html, body { background: #fff; } .report-shell { width: auto; margin: 0; padding: 0; } .report-document { max-width: none; min-height: 0; padding: 0; border: 0; box-shadow: none; } h1 { margin-bottom: 1.6rem; } h2 { break-after: avoid; } p, li { orphans: 2; widows: 2; } a { color: inherit; } }',
+  ];
 }
 
 export function renderMarkdownDocument(markdown, options = {}) {
@@ -139,23 +177,14 @@ export function renderMarkdownDocument(markdown, options = {}) {
     '  <meta name="viewport" content="width=device-width, initial-scale=1" />',
     `  <title>${escapeHtml(title)}</title>`,
     '  <style>',
-    '    :root { color-scheme: light; }',
-    '    body { margin: 0; background: #f5f2e8; color: #1f1c18; font-family: "Noto Serif SC", "Source Han Serif SC", Georgia, serif; }',
-    '    main { max-width: 880px; margin: 0 auto; padding: 40px 24px 72px; }',
-    '    h1, h2, h3 { line-height: 1.25; color: #15110d; }',
-    '    h1 { font-size: 2.2rem; margin: 0 0 1.5rem; }',
-    '    h2 { margin-top: 2.4rem; border-top: 1px solid #d9cfbf; padding-top: 1.2rem; }',
-    '    p, li { font-size: 1.02rem; line-height: 1.8; }',
-    '    ul { padding-left: 1.4rem; }',
-    '    code { background: #efe7d8; padding: 0.1rem 0.35rem; border-radius: 4px; font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }',
-    '    pre { overflow-x: auto; background: #201b16; color: #f6efe5; padding: 16px; border-radius: 10px; }',
-    '    a { color: #0b5cad; text-decoration: none; }',
-    '    a:hover { text-decoration: underline; }',
+    ...renderReportStyles().map((rule) => `    ${rule}`),
     '  </style>',
     '</head>',
     '<body>',
-    '  <main>',
-    body.map((chunk) => `    ${chunk}`).join('\n'),
+    '  <main class="report-shell">',
+    '    <article class="report-document">',
+    body.map((chunk) => `      ${chunk}`).join('\n'),
+    '    </article>',
     '  </main>',
     '</body>',
     '</html>',
