@@ -18,6 +18,12 @@
 - GPT / Claude：筛选价值内容、账号评分、生成日报
 - roster：根据历史评分和抓取状态生成当天名单
 
+当前默认 GPT 成本策略：
+
+- 终稿主模型使用 `gpt-5.4`，推理强度为 `high`
+- 终稿 fallback、中间筛选和账号评分默认使用 `gpt-5.4-mini`
+- GitHub Actions 可通过 `OPENAI_BRIEF_MODEL`、`OPENAI_BRIEF_FALLBACK_MODEL`、`OPENAI_SCREENING_MODEL`、`OPENAI_ROSTER_MODEL` 覆盖默认模型
+
 ## 流程概览
 
 完整运行一次 `run` 时，默认顺序如下：
@@ -205,10 +211,20 @@ node scripts/run.mjs --mode analyze --analysis-profile claude-default
   抓取前静态过滤与预检查
 - `analysis.activeProfile`
   默认分析配置，当前是 `gpt-default`
+- `analysis.profiles.gpt-default.maxOutputTokens`
+  分析阶段输出上限，也会约束 roster 账号评分的动态输出预算
+- `analysis.profiles.gpt-default.*ModelRef`
+  按阶段绑定模型，默认终稿主模型走 `gpt-main`，fallback、screening、roster 走 `gpt-main-mini`
+- `roster.scoring.batchSize`
+  每批送入账号评分模型的账号数，默认 `20`
+- `roster.scoring.maxTweetsPerAccount`
+  每个账号进入评分 prompt 的最近推文上限，默认 `3`
 - `providers.*.configSource`
   从外部凭据文件映射 provider 配置
 
 仓库内配置是安全模板，不应包含真实密钥。
+
+roster 账号评分的输出 token 预算会随批次账号数增长：基础值为 `1500`，超过 3 个账号后按账号追加预算，并受 `maxOutputTokens` 和内部硬上限 `8000` 约束。这样可以降低请求次数，同时避免 20 账号批次被固定小输出上限截断。
 
 ## 输出产物
 
@@ -275,6 +291,17 @@ node --test test/live.acceptance.test.mjs
    - `/raw/latest`
 
 详细部署步骤见 [`部署教程.md`](./部署教程.md)。
+
+GitHub Actions 中建议配置的 OpenAI 模型 Secrets：
+
+```text
+OPENAI_BRIEF_MODEL = gpt-5.4
+OPENAI_BRIEF_FALLBACK_MODEL = gpt-5.4-mini
+OPENAI_SCREENING_MODEL = gpt-5.4-mini
+OPENAI_ROSTER_MODEL = gpt-5.4-mini
+```
+
+如果这些 Secrets 留空，workflow 会使用上面的低成本默认值。
 
 ## OpenClaw 使用方式
 
