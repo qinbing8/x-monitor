@@ -584,22 +584,22 @@ test('runRosterScoring honors the configured scoring batch size', async () => {
   const fixture = await createMockSkillFixture();
   try {
     const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
-    config.roster.scoring.batchSize = 10;
+    config.analysis.profiles['gpt-default'].maxOutputTokens = 8000;
+    config.roster.scoring.batchSize = 20;
     await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
 
+    const handles = Array.from({ length: 20 }, (_, index) => `account${String(index + 1).padStart(2, '0')}`);
     const seedRows = [
       '\uFEFFTweetID,Handle,Name,Bio,CanDM,AccountCreateDate,Location,FollowersCount,FollowingCount,TotalFavouritesByUser,MediaCount,UserPageURL,ProfileBannerURL,ProfileURL,AvatarURL,PostCount,Verified,IsBlueVerified',
-      '"1599634054919245824","alice","Alice Maker","Builds tools","false","2022/12/5 13:17:41","Shanghai","3","156","106","0","https://x.com/alice","","https://example.com/alice","https://cdn.example/alice.png","12","false","false"',
-      '"1439790545048457225","bob","Bob Chen","Just fun","false","2021/9/20 11:16:41","","0","38","5","0","https://x.com/bob","","","https://cdn.example/bob.png","7","false","false"',
-      '"1555555555555555555","charlie","Charlie Ops","Ships infra","false","2020/5/20 11:16:41","","10","12","9","0","https://x.com/charlie","","","https://cdn.example/charlie.png","4","false","false"',
-      '"1666666666666666666","dora","Dora Labs","Writes benchmarks","false","2021/5/20 11:16:41","","10","12","9","0","https://x.com/dora","","","https://cdn.example/dora.png","5","false","false"',
+      ...handles.map((handle, index) => (
+        `"15${String(index + 1).padStart(17, '0')}","${handle}","${handle}","Builds tools","false","2022/12/5 13:17:41","Shanghai","3","156","106","0","https://x.com/${handle}","","https://example.com/${handle}","https://cdn.example/${handle}.png","12","false","false"`
+      )),
     ].join('\n');
     await writeFile(`${fixture.skillRoot}\\seed.csv`, seedRows, 'utf8');
 
     const { config: loadedConfig, skillRoot } = await loadConfig(fixture.configPath);
     const sourceDocs = await loadSourceDocuments(loadedConfig, skillRoot);
     const profile = resolveAnalysisProfile(loadedConfig, sourceDocs, 'gpt-default');
-    const handles = ['alice', 'bob', 'charlie', 'dora'];
     const fetchResult = {
       accounts: handles.map((handle) => ({
         seedId: handle,
@@ -644,11 +644,14 @@ test('runRosterScoring honors the configured scoring batch size', async () => {
     });
 
     assert.equal(requests.length, 1);
-    assert.equal(summary.scoredAccountCount, 4);
+    assert.equal(summary.scoredAccountCount, 20);
+    const requestTokenLimit = requests[0].max_tokens ?? requests[0].max_output_tokens;
+    assert.ok(requestTokenLimit > 1500, `Expected roster token budget above 1500, got ${requestTokenLimit}`);
+    assert.ok(requestTokenLimit <= 8000, `Expected roster token budget within profile cap, got ${requestTokenLimit}`);
 
     const scoreInput = await readJson(summary.rosterScoreInputPath);
-    assert.equal(scoreInput.batchSize, 10);
-    assert.equal(scoreInput.accountCount, 4);
+    assert.equal(scoreInput.batchSize, 20);
+    assert.equal(scoreInput.accountCount, 20);
   } finally {
     await fixture.cleanup();
   }

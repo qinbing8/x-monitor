@@ -15,7 +15,9 @@ const DEFAULT_TIER_INTERVALS = {
   cold: 28,
 };
 const MAX_SCORING_TWEET_TEXT_CHARS = 140;
-const MAX_ROSTER_SCORE_OUTPUT_TOKENS = 1500;
+const MIN_ROSTER_SCORE_OUTPUT_TOKENS = 1500;
+const ROSTER_SCORE_OUTPUT_TOKENS_PER_EXTRA_ACCOUNT = 180;
+const MAX_ROSTER_SCORE_OUTPUT_TOKENS = 8000;
 const DEFAULT_MIN_DAILY_ROSTER_SIZE = 12;
 const ROSTER_STATE_VERSION = 3;
 const ROSTER_SELECTION_STRATEGY = 'cadence_hash_v2_topup_floor';
@@ -23,6 +25,17 @@ const ROSTER_SELECTION_STRATEGY = 'cadence_hash_v2_topup_floor';
 function normalizeNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function resolveRosterScoreMaxTokens(profile, batchAccountCount) {
+  const configuredLimit = Number(profile?.maxOutputTokens);
+  const profileLimit = Number.isFinite(configuredLimit) && configuredLimit > 0
+    ? configuredLimit
+    : MAX_ROSTER_SCORE_OUTPUT_TOKENS;
+  const extraAccounts = Math.max(0, Number(batchAccountCount) - 3);
+  const scaledBudget = MIN_ROSTER_SCORE_OUTPUT_TOKENS
+    + (extraAccounts * ROSTER_SCORE_OUTPUT_TOKENS_PER_EXTRA_ACCOUNT);
+  return Math.max(1, Math.min(profileLimit, scaledBudget, MAX_ROSTER_SCORE_OUTPUT_TOKENS));
 }
 
 function clampScore(score, scoringConfig) {
@@ -657,7 +670,7 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
         reasoningEffort: profile.reasoningEffort,
         timeoutMs: profile.timeoutMs,
         temperature: profile.temperature,
-        maxTokens: Math.min(profile.maxOutputTokens ?? MAX_ROSTER_SCORE_OUTPUT_TOKENS, MAX_ROSTER_SCORE_OUTPUT_TOKENS),
+        maxTokens: resolveRosterScoreMaxTokens(profile, batch.length),
         messages: [{ role: 'user', content: renderedPrompt }],
         fetchImpl,
         logger: logger?.child('llm'),
