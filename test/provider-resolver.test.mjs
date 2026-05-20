@@ -34,7 +34,7 @@ test('provider resolution switches analysis profile between gpt and claude', asy
 
     const gptProfile = resolveAnalysisProfile(config, sourceDocs, 'gpt-default');
     assert.equal(gptProfile.modelId, 'gpt-5.4');
-    assert.equal(gptProfile.reasoningEffort, 'xhigh');
+    assert.equal(gptProfile.reasoningEffort, 'high');
     assert.equal(gptProfile.provider.baseUrl, FIXTURE_OPENCLAW.models.providers['router-gpt'].baseUrl);
     assert.equal(gptProfile.provider.api, 'openai-responses');
     assert.deepEqual(gptProfile.provider.headers, FIXTURE_OPENCLAW.models.providers['router-gpt'].headers);

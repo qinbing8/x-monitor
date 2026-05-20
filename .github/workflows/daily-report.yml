@@ -129,10 +129,24 @@ jobs:
 
           OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL="$(node --input-type=module - <<'EOF'
           const normalized = String(process.env.OPENAI_BRIEF_FALLBACK_MODEL ?? '').trim();
-          process.stdout.write(normalized || 'gpt-5.4');
+          process.stdout.write(normalized || 'gpt-5.4-mini');
           EOF
           )"
           echo "Using OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL=${OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL}"
+
+          OPENAI_SCREENING_RUNTIME_MODEL="$(node --input-type=module - <<'EOF'
+          const normalized = String(process.env.OPENAI_SCREENING_MODEL ?? '').trim();
+          process.stdout.write(normalized || 'gpt-5.4-mini');
+          EOF
+          )"
+          echo "Using OPENAI_SCREENING_RUNTIME_MODEL=${OPENAI_SCREENING_RUNTIME_MODEL}"
+
+          OPENAI_ROSTER_RUNTIME_MODEL="$(node --input-type=module - <<'EOF'
+          const normalized = String(process.env.OPENAI_ROSTER_MODEL ?? '').trim();
+          process.stdout.write(normalized || 'gpt-5.4-mini');
+          EOF
+          )"
+          echo "Using OPENAI_ROSTER_RUNTIME_MODEL=${OPENAI_ROSTER_RUNTIME_MODEL}"
 
           cat > .tmp/github-actions/search.json <<EOF
           {
@@ -157,8 +171,8 @@ jobs:
                   "models": [
                     { "id": "${OPENAI_BRIEF_RUNTIME_MODEL}" },
                     { "id": "${OPENAI_BRIEF_FALLBACK_RUNTIME_MODEL}" },
-                    { "id": "${OPENAI_SCREENING_MODEL}" },
-                    { "id": "${OPENAI_ROSTER_MODEL}" }
+                    { "id": "${OPENAI_SCREENING_RUNTIME_MODEL}" },
+                    { "id": "${OPENAI_ROSTER_RUNTIME_MODEL}" }
                   ]
                 }
               }
@@ -186,19 +200,19 @@ jobs:
             'gpt-brief': {
               providerRef: 'gpt',
               modelId: briefModelId,
-              reasoningEffort: 'xhigh',
+              reasoningEffort: 'high',
             },
             'gpt-brief-fallback': {
               providerRef: 'gpt',
-              modelId: String(process.env.OPENAI_BRIEF_FALLBACK_MODEL ?? '').trim() || 'gpt-5.4',
+              modelId: String(process.env.OPENAI_BRIEF_FALLBACK_MODEL ?? '').trim() || 'gpt-5.4-mini',
             },
             'gpt-screening': {
               providerRef: 'gpt',
-              modelId: process.env.OPENAI_SCREENING_MODEL,
+              modelId: String(process.env.OPENAI_SCREENING_MODEL ?? '').trim() || 'gpt-5.4-mini',
             },
             'gpt-roster': {
               providerRef: 'gpt',
-              modelId: process.env.OPENAI_ROSTER_MODEL,
+              modelId: String(process.env.OPENAI_ROSTER_MODEL ?? '').trim() || 'gpt-5.4-mini',
             },
           };
           config.analysis.profiles['gpt-default'].modelRef = 'gpt-brief';

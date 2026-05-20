@@ -11,6 +11,7 @@ import {
   FIXTURE_REFERENCE_TIME,
   FIXTURE_TWEET_FETCH_RESPONSE,
   createCompletionFetch,
+  createCompletionResponse,
   createMockSkillFixture,
   readJson,
   readText,
@@ -574,6 +575,80 @@ test('runRosterScoring updates account scores from GPT decisions without changin
     const scoreResult = await readJson(summary.rosterScoreResultPath);
     assert.equal(scoreResult.decisionCount, 1);
     assert.equal(scoreResult.decisions[0].handle, 'alice');
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runRosterScoring honors the configured scoring batch size', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = withRosterConfig(JSON.parse(await readFile(fixture.configPath, 'utf8')));
+    config.roster.scoring.batchSize = 10;
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const seedRows = [
+      '\uFEFFTweetID,Handle,Name,Bio,CanDM,AccountCreateDate,Location,FollowersCount,FollowingCount,TotalFavouritesByUser,MediaCount,UserPageURL,ProfileBannerURL,ProfileURL,AvatarURL,PostCount,Verified,IsBlueVerified',
+      '"1599634054919245824","alice","Alice Maker","Builds tools","false","2022/12/5 13:17:41","Shanghai","3","156","106","0","https://x.com/alice","","https://example.com/alice","https://cdn.example/alice.png","12","false","false"',
+      '"1439790545048457225","bob","Bob Chen","Just fun","false","2021/9/20 11:16:41","","0","38","5","0","https://x.com/bob","","","https://cdn.example/bob.png","7","false","false"',
+      '"1555555555555555555","charlie","Charlie Ops","Ships infra","false","2020/5/20 11:16:41","","10","12","9","0","https://x.com/charlie","","","https://cdn.example/charlie.png","4","false","false"',
+      '"1666666666666666666","dora","Dora Labs","Writes benchmarks","false","2021/5/20 11:16:41","","10","12","9","0","https://x.com/dora","","","https://cdn.example/dora.png","5","false","false"',
+    ].join('\n');
+    await writeFile(`${fixture.skillRoot}\\seed.csv`, seedRows, 'utf8');
+
+    const { config: loadedConfig, skillRoot } = await loadConfig(fixture.configPath);
+    const sourceDocs = await loadSourceDocuments(loadedConfig, skillRoot);
+    const profile = resolveAnalysisProfile(loadedConfig, sourceDocs, 'gpt-default');
+    const handles = ['alice', 'bob', 'charlie', 'dora'];
+    const fetchResult = {
+      accounts: handles.map((handle) => ({
+        seedId: handle,
+        handle,
+        displayName: handle,
+        userPageUrl: `https://x.com/${handle}`,
+        status: 'covered',
+        tweetCount: 1,
+        notes: [],
+      })),
+      items: handles.map((handle, index) => ({
+        tweetId: `19000${index + 1}`,
+        username: handle,
+        displayName: handle,
+        createdAt: '2026-03-23T01:02:03Z',
+        text: `${handle} shared a concrete AI tooling update.`,
+        originalUrl: `https://x.com/${handle}/status/19000${index + 1}`,
+      })),
+    };
+    const requests = [];
+
+    const summary = await runRosterScoring({
+      config: loadedConfig,
+      skillRoot,
+      runDate: '2026-03-23',
+      fetchResult,
+      profile,
+      fetchImpl: async (_url, options) => {
+        const body = JSON.parse(options.body);
+        requests.push(body);
+        const prompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
+        const batchHandles = [...prompt.matchAll(/"handle":\s*"([^"]+)"/g)].map((match) => match[1]);
+        const response = JSON.stringify(batchHandles.map((handle) => ({
+          handle,
+          high_value_tweet_count: 1,
+          low_value_chat_count: 0,
+          reason: 'Concrete tooling update.',
+        })));
+        return createCompletionResponse({ content: response, finishReason: 'stop' }, body);
+      },
+      runDir: fixture.skillRoot,
+    });
+
+    assert.equal(requests.length, 1);
+    assert.equal(summary.scoredAccountCount, 4);
+
+    const scoreInput = await readJson(summary.rosterScoreInputPath);
+    assert.equal(scoreInput.batchSize, 10);
+    assert.equal(scoreInput.accountCount, 4);
   } finally {
     await fixture.cleanup();
   }

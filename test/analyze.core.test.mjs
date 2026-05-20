@@ -14,11 +14,11 @@ import {
 } from '../scripts/analyze.mjs';
 
 test('resolveAnalyzeTimeoutMs enforces a live-safe timeout floor', () => {
-  assert.equal(resolveAnalyzeTimeoutMs(90000), 300000);
-  assert.equal(resolveAnalyzeTimeoutMs(180000), 300000);
-  assert.equal(resolveAnalyzeTimeoutMs(240000), 300000);
-  assert.equal(resolveAnalyzeTimeoutMs(360000), 360000);
-  assert.equal(resolveAnalyzeTimeoutMs(undefined), 300000);
+  assert.equal(resolveAnalyzeTimeoutMs(90000), 480000);
+  assert.equal(resolveAnalyzeTimeoutMs(180000), 480000);
+  assert.equal(resolveAnalyzeTimeoutMs(240000), 480000);
+  assert.equal(resolveAnalyzeTimeoutMs(360000), 480000);
+  assert.equal(resolveAnalyzeTimeoutMs(undefined), 480000);
 });
 
 test('filterNoiseTweets separates low-signal placeholders from real tweets', () => {

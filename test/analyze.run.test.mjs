@@ -39,8 +39,9 @@ test('repo analysis profiles keep timeout above the known live-run failure thres
     assert.equal(config.analysis.profiles['gpt-default'].briefFallbackModelRef, 'gpt-main-mini');
     assert.equal(config.analysis.profiles['gpt-default'].rosterModelRef, 'gpt-main-mini');
     assert.equal(config.analysis.profiles['gpt-default'].screeningModelRef, 'gpt-main-mini');
+    assert.equal(config.models['gpt-main'].reasoningEffort, 'high');
     assert.equal(config.models['gpt-main-mini'].providerRef, 'gpt');
-    assert.equal(config.models['gpt-main-mini'].modelId, 'gpt-5.4');
+    assert.equal(config.models['gpt-main-mini'].modelId, 'gpt-5.4-mini');
   }
 });
 
@@ -77,8 +78,8 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.meta.analysisProfile, 'gpt-default');
     assert.equal(analyzeResult.meta.provider, 'gpt');
     assert.equal(analyzeResult.meta.model, 'gpt-5.4');
-    assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4');
-    assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4');
+    assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
+    assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
     assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4');
     assert.equal(analyzeResult.meta.tweetCount, 2);
     assert.equal(analyzeResult.meta.coverage.failedAccountCount, 0);
@@ -526,7 +527,7 @@ test('runAnalyze retries final draft with a fallback brief model when the primar
       fetchImpl: async (_url, options) => {
         const body = JSON.parse(options?.body ?? '{}');
         requests.push(body);
-        if (body.model === 'gpt-5.4' && body.reasoning?.effort === 'xhigh') {
+        if (body.model === 'gpt-5.4' && body.reasoning?.effort === 'high') {
           return {
             ok: false,
             status: 503,
@@ -540,19 +541,19 @@ test('runAnalyze retries final draft with a fallback brief model when the primar
 
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.answer.source, 'fallback_model');
-    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4');
+    assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4-mini');
     assert.equal(analyzeResult.meta.generatedByFallbackModel, true);
     assert.match(analyzeResult.meta.primaryBriefFailureSummary, /Service temporarily unavailable/);
     assert.equal(analyzeResult.meta.finalDraftAttempts.length, 2);
     assert.equal(analyzeResult.meta.finalDraftAttempts[0].status, 'failed');
-    assert.equal(analyzeResult.meta.finalDraftAttempts[0].reasoningEffort, 'xhigh');
+    assert.equal(analyzeResult.meta.finalDraftAttempts[0].reasoningEffort, 'high');
     assert.equal(analyzeResult.meta.finalDraftAttempts[1].status, 'succeeded');
     assert.equal(analyzeResult.meta.finalDraftAttempts[1].reasoningEffort, null);
     assert.match(analyzeResult.answer.note, /本稿由 fallback 模型生成/);
     assert.equal(requests.length, 2);
     assert.equal(requests[0].model, 'gpt-5.4');
-    assert.equal(requests[0].reasoning?.effort, 'xhigh');
-    assert.equal(requests[1].model, 'gpt-5.4');
+    assert.equal(requests[0].reasoning?.effort, 'high');
+    assert.equal(requests[1].model, 'gpt-5.4-mini');
     assert.equal(requests[1].reasoning, undefined);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
@@ -589,7 +590,7 @@ test('runAnalyze preserves a final-draft diagnostic artifact and falls back to a
     const analyzeError = await readJson(join(analyzeSummary.runDir, 'analyze.error.json'));
     assert.equal(analyzeError.stage, 'final_draft');
     assert.equal(analyzeError.analysisProfile, 'gpt-default');
-    assert.equal(analyzeError.briefModel, 'gpt-5.4');
+    assert.equal(analyzeError.briefModel, 'gpt-5.4-mini');
     assert.equal(analyzeError.candidateSelectionMode, 'direct_heuristic');
     assert.equal(analyzeError.screeningChunkCount, 0);
     assert.equal(analyzeError.promptSignalTweetCount, 2);
@@ -678,7 +679,7 @@ test('runAnalyze can resume from analyze.input.json and only rerun the final bri
 
     assert.equal(requests.length, 1);
     assert.equal(requests[0].model, 'gpt-5.4');
-    assert.equal(requests[0].reasoning?.effort, 'xhigh');
+    assert.equal(requests[0].reasoning?.effort, 'high');
     assert.equal(requests[0].stream, true);
     assert.equal(resumedAnalyze.runDir, initialAnalyze.runDir);
 
@@ -838,7 +839,7 @@ test('runAnalyze screens large signal sets in chunks before generating the final
     assert.equal(requests[2].model, 'gpt-5.4-mini');
     assert.equal(requests[3].model, 'gpt-5.4-mini');
     assert.equal(requests[4].model, 'gpt-5.4');
-    assert.equal(requests[4].reasoning?.effort, 'xhigh');
+    assert.equal(requests[4].reasoning?.effort, 'high');
     assert.equal(requests[0].stream, false);
     assert.equal(requests[1].stream, false);
     assert.equal(requests[2].stream, false);

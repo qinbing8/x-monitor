@@ -25,3 +25,14 @@ test('daily-report workflow wires independent fallback brief model secrets into 
   assert.match(workflow, /'gpt-brief-fallback': \{/);
   assert.match(workflow, /briefFallbackModelRef = 'gpt-brief-fallback';/);
 });
+
+test('daily-report workflow defaults lower-cost GPT stages unless secrets override them', async () => {
+  const workflow = await readUtf8('../.github/workflows/daily-report.yml');
+
+  assert.match(workflow, /reasoningEffort: 'high'/);
+  assert.match(workflow, /Using OPENAI_SCREENING_RUNTIME_MODEL=/);
+  assert.match(workflow, /Using OPENAI_ROSTER_RUNTIME_MODEL=/);
+  assert.match(workflow, /OPENAI_BRIEF_FALLBACK_MODEL \?\? ''\)\.trim\(\) \|\| 'gpt-5\.4-mini'/);
+  assert.match(workflow, /OPENAI_SCREENING_MODEL \?\? ''\)\.trim\(\) \|\| 'gpt-5\.4-mini'/);
+  assert.match(workflow, /OPENAI_ROSTER_MODEL \?\? ''\)\.trim\(\) \|\| 'gpt-5\.4-mini'/);
+});

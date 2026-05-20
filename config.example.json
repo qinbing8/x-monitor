@@ -169,11 +169,11 @@
     "gpt-main": {
       "providerRef": "gpt",
       "modelId": "gpt-5.4",
-      "reasoningEffort": "xhigh"
+      "reasoningEffort": "high"
     },
     "gpt-main-mini": {
       "providerRef": "gpt",
-      "modelId": "gpt-5.4"
+      "modelId": "gpt-5.4-mini"
     },
     "claude-main": {
       "providerRef": "claude",

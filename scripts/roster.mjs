@@ -617,7 +617,7 @@ export async function runRosterScoring({ config, skillRoot, runDate, fetchResult
   const masterSeeds = await readMasterRoster(rosterConfig.masterCsvPath);
   const scoreState = await readScoreState(rosterConfig.scoreFilePath, masterSeeds, rosterConfig);
   const scoringAccounts = buildScoringEvidence(fetchResult, scoreState, rosterConfig);
-  const effectiveBatchSize = Math.min(rosterConfig.batchSize, 3);
+  const effectiveBatchSize = rosterConfig.batchSize;
   const scoringBatches = chunkArray(scoringAccounts, effectiveBatchSize);
   const scoringConcurrency = Math.max(1, Number(profile.concurrency ?? 1) || 1);
   const promptTemplate = await readFile(rosterConfig.promptFile, 'utf8');
