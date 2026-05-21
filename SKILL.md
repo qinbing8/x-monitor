@@ -78,7 +78,9 @@ Artifacts are written under `data/YYYY-MM-DD/` in this skill directory.
 - `analyze.result.json`
   Analysis metadata plus the model’s Markdown output.
 - `final.md`
-  Final human-readable daily brief.
+  Final human-readable daily brief. Reader-facing reports intentionally omit coverage and risk diagnostics.
+- `maintenance.json`
+  Publish-time maintainer summary with quality status, account coverage, fetch diagnosis, and artifact keys.
 
 See `references/output-schema.md` for the schema summary.
 

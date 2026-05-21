@@ -123,6 +123,26 @@ export async function handleRequest(request, env) {
     });
   }
 
+  if (url.pathname === '/maintenance/latest') {
+    const latest = await readJson(bucket, 'reports/latest.json');
+    if (!latest?.maintenanceKey) {
+      return responseWithHeaders('Latest maintenance diagnostics not found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
+    const diagnostics = await readText(bucket, latest.maintenanceKey);
+    if (!diagnostics) {
+      return responseWithHeaders('Latest maintenance diagnostics file not found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
+    return responseWithHeaders(diagnostics.text, {
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  }
+
   const reportMatch = url.pathname.match(/^\/reports\/(\d{4}-\d{2}-\d{2})\/([^/]+)$/);
   if (reportMatch) {
     const report = await readText(bucket, buildReportKey(reportMatch[1], reportMatch[2], 'final.html'));
@@ -148,6 +168,20 @@ export async function handleRequest(request, env) {
     }
     return responseWithHeaders(report.text, {
       headers: { 'content-type': 'text/markdown; charset=utf-8' },
+    });
+  }
+
+  const maintenanceMatch = url.pathname.match(/^\/maintenance\/(\d{4}-\d{2}-\d{2})\/([^/]+)$/);
+  if (maintenanceMatch) {
+    const diagnostics = await readText(bucket, buildReportKey(maintenanceMatch[1], maintenanceMatch[2], 'maintenance.json'));
+    if (!diagnostics) {
+      return responseWithHeaders('Maintenance diagnostics not found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
+    return responseWithHeaders(diagnostics.text, {
+      headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   }
 

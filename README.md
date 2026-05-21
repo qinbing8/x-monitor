@@ -251,9 +251,11 @@ data/YYYY-MM-DD/run-*/
 - `analyze.result.json`
   分析元数据和模型输出
 - `final.md`
-  最终日报
+  最终日报正文，面向阅读者，不展开抓取覆盖与风险诊断
+- `maintenance.json`
+  云端发布时生成的维护诊断摘要，包含质量状态、覆盖情况、抓取诊断和相关产物 key
 
-如果只想看日报，直接打开 `final.md`。
+如果只想看日报，直接打开 `final.md`。如果要检查覆盖与风险，优先看 `analyze.result.json`；云端发布后也可以看 `maintenance.json`。
 
 ## 测试
 
@@ -289,6 +291,7 @@ node --test test/live.acceptance.test.mjs
    - `/`
    - `/history`
    - `/raw/latest`
+   - `/maintenance/latest`
 
 详细部署步骤见 [`部署教程.md`](./部署教程.md)。
 

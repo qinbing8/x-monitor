@@ -1547,28 +1547,17 @@ export function diagnoseFetchEvidence({ accounts = [], items = [], signalItems =
   };
 }
 
-function buildDiagnosticFallbackDailyBrief({ runDate, quality, diagnosis, coverage, tweetCount, signalTweetCount }) {
-  const warningTypes = Array.isArray(diagnosis?.warningTypes) && diagnosis.warningTypes.length > 0
-    ? diagnosis.warningTypes.join(', ')
-    : 'none';
-  const qualityNote = quality?.note ? `- 质量门控：${quality.note}` : null;
+function buildDiagnosticFallbackDailyBrief({ runDate }) {
   return [
     `# X 日报 | ${runDate}`,
     '',
-    '> GPT 未返回可用日报正文，以下为抓取诊断结果。',
+    '> 终稿模型未产出可用正文，当前没有可展示的高价值推文条目。',
     '',
-    '## 抓取诊断',
-    `- 状态：${diagnosis?.status ?? 'unknown'}`,
-    `- 说明：${diagnosis?.note ?? 'No diagnosis available.'}`,
-    qualityNote,
-    `- 抓取账号覆盖：${coverage.coveredAccountCount}/${coverage.totalAccountCount}`,
-    `- 原始推文数：${tweetCount}`,
-    `- 信号推文数：${signalTweetCount}`,
-    `- 抓取警告类型：${warningTypes}`,
+    '## 今日摘要',
+    '- 暂未发现可进入日报正文的高价值推文。',
     '',
-    '## 下一步建议',
-    '- 先检查 Grok 抓取日志、名单覆盖和 24 小时时间窗口是否正常。',
-    '- 如果抓取正常，再检查 GPT 请求日志、超时和返回内容是否为空。',
+    '## 高价值推文',
+    '- 暂无可展示条目。',
   ].filter(Boolean).join('\n');
 }
 
@@ -1624,16 +1613,6 @@ function buildStructuredFallbackDailyBrief({
     return `- @${handle}：${text}${url ? ` ${url}` : ''}`.trim();
   });
 
-  const coverageLines = [
-    `- 抓取账号覆盖：${coverage.coveredAccountCount}/${coverage.totalAccountCount}`,
-    `- 无符合条件推文账号：${coverage.noTweetAccountCount ?? 0}`,
-    `- 休眠跳过账号：${coverage.dormantAccountCount ?? 0}`,
-    `- 未完成账号：${coverage.incompleteAccountCount ?? 0}`,
-    `- 原始推文数：${tweetCount}`,
-    `- 信号推文数：${signalTweetCount}`,
-    `- 抓取诊断：${diagnosis?.note ?? 'No diagnosis available.'}`,
-  ];
-
   return [
     `# X 日报 | ${runDate}`,
     '',
@@ -1647,10 +1626,6 @@ function buildStructuredFallbackDailyBrief({
     '',
     '## 高价值推文完整清单',
     ...digestLines,
-    '',
-    '## 抓取覆盖与缺口',
-    ...(quality?.note ? [`- 质量门控：${quality.note}`] : []),
-    ...coverageLines,
   ].filter(Boolean).join('\n');
 }
 

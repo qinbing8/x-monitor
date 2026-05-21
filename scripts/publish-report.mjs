@@ -72,31 +72,31 @@ function closeListIfNeeded(state, output) {
 
 function renderReportStyles() {
   return [
-    ':root { color-scheme: light; --page-bg: #ece7dc; --paper: #fffefa; --ink: #181613; --muted: #6f665b; --rule: #ded6ca; --rule-strong: #b9aa98; --accent: #1f5f8f; }',
+    ':root { color-scheme: light; --page-bg: #f7f8fb; --paper: #ffffff; --ink: #111827; --muted: #5b6472; --rule: #d8dee8; --rule-soft: #eef1f6; --accent: #0f766e; }',
     '* { box-sizing: border-box; }',
     'html { background: var(--page-bg); }',
-    'body { margin: 0; background: var(--page-bg); color: var(--ink); font-family: Charter, "PingFang SC", "Noto Serif SC", "Source Han Serif SC", Georgia, serif; text-rendering: optimizeLegibility; }',
-    '.report-shell { width: min(100%, 980px); margin: 0 auto; padding: 32px 24px 56px; }',
-    '.report-document { max-width: 820px; min-height: calc(100vh - 88px); margin: 0 auto; padding: 58px 64px 72px; background: var(--paper); border: 1px solid var(--rule); box-shadow: 0 18px 50px rgba(31, 28, 24, 0.12); }',
-    'h1, h2, h3 { color: #12100d; font-family: "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", Charter, Georgia, serif; font-weight: 700; line-height: 1.25; }',
-    'h1 { margin: 0 0 1.8rem; padding-bottom: 1rem; border-bottom: 2px solid #181613; font-size: 2.35rem; }',
-    'h2 { margin: 2.7rem 0 1rem; padding-top: 1.1rem; border-top: 1px solid var(--rule-strong); font-size: 1.32rem; }',
-    'h2:first-of-type { margin-top: 2rem; }',
-    'h3 { margin: 1.8rem 0 0.7rem; font-size: 1.12rem; }',
-    'p, li { font-size: 1.02rem; line-height: 1.82; }',
-    'p { margin: 0 0 1rem; }',
-    'ul { margin: 0 0 1.35rem; padding-left: 1.25rem; }',
-    'li { margin: 0.42rem 0; padding-left: 0.2rem; }',
+    'body { margin: 0; background: var(--page-bg); color: var(--ink); font-family: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif; text-rendering: optimizeLegibility; }',
+    '.report-shell { width: min(100%, 920px); margin: 0 auto; padding: 44px 24px 64px; }',
+    '.report-document { max-width: 760px; min-height: calc(100vh - 108px); margin: 0 auto; padding: 0; background: transparent; }',
+    'h1, h2, h3 { color: var(--ink); font-weight: 700; line-height: 1.28; }',
+    'h1 { margin: 0 0 1.9rem; padding-bottom: 1rem; border-bottom: 1px solid var(--rule); font-size: 2.1rem; }',
+    'h2 { margin: 2.35rem 0 0.9rem; padding-top: 0.95rem; border-top: 1px solid var(--rule-soft); font-size: 1.22rem; }',
+    'h2:first-of-type { margin-top: 1.65rem; }',
+    'h3 { margin: 1.55rem 0 0.65rem; font-size: 1.06rem; }',
+    'p, li { font-size: 1rem; line-height: 1.78; }',
+    'p { margin: 0 0 0.95rem; color: var(--muted); }',
+    'ul { margin: 0 0 1.2rem; padding-left: 1.15rem; }',
+    'li { margin: 0.36rem 0; padding-left: 0.16rem; }',
     'li::marker { color: var(--accent); }',
-    'strong { color: #111; font-weight: 700; }',
-    'code { padding: 0.08rem 0.28rem; border: 1px solid #e2d8c9; border-radius: 4px; background: #f3eddf; font-family: Menlo, "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 0.92em; overflow-wrap: anywhere; }',
-    'pre { overflow-x: auto; margin: 1.1rem 0 1.35rem; padding: 16px 18px; border-radius: 8px; background: #201b16; color: #f7f0e6; }',
+    'strong { color: var(--ink); font-weight: 700; }',
+    'code { padding: 0.08rem 0.26rem; border: 1px solid #dbe7e5; border-radius: 4px; background: #ecfdf9; color: #075f58; font-family: Menlo, "Cascadia Code", "SFMono-Regular", Consolas, monospace; font-size: 0.92em; overflow-wrap: anywhere; }',
+    'pre { overflow-x: auto; margin: 1rem 0 1.25rem; padding: 14px 16px; border-radius: 8px; background: #111827; color: #f8fafc; }',
     'pre code { padding: 0; border: 0; background: transparent; color: inherit; }',
     'a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.16em; overflow-wrap: anywhere; }',
     'a:hover { text-decoration-thickness: 2px; }',
     '@page { size: A4; margin: 20mm 22mm 22mm; }',
-    '@media (max-width: 720px) { .report-shell { padding: 0; } .report-document { min-height: 100vh; padding: 32px 20px 52px; border: 0; box-shadow: none; } h1 { font-size: 1.75rem; } h2 { margin-top: 2rem; font-size: 1.18rem; } p, li { font-size: 1rem; } }',
-    '@media print { html, body { background: #fff; } .report-shell { width: auto; margin: 0; padding: 0; } .report-document { max-width: none; min-height: 0; padding: 0; border: 0; box-shadow: none; } h1 { margin-bottom: 1.6rem; } h2 { break-after: avoid; } p, li { orphans: 2; widows: 2; } a { color: inherit; } }',
+    '@media (max-width: 720px) { .report-shell { padding: 28px 18px 48px; } .report-document { min-height: 100vh; } h1 { font-size: 1.65rem; } h2 { margin-top: 1.9rem; font-size: 1.14rem; } p, li { font-size: 0.98rem; } }',
+    '@media print { html, body { background: #fff; } .report-shell { width: auto; margin: 0; padding: 0; } .report-document { max-width: none; min-height: 0; padding: 0; } h1 { margin-bottom: 1.6rem; } h2 { break-after: avoid; } p, li { orphans: 2; widows: 2; } a { color: inherit; } }',
   ];
 }
 
@@ -227,6 +227,26 @@ function extractSummary(markdown) {
   return stripInlineMarkdown(fallbackLine ?? '').slice(0, 120);
 }
 
+function stripMaintenanceSections(markdown) {
+  const maintenanceHeadingPattern = /^##\s+(?:覆盖与风险|抓取覆盖与缺口|抓取诊断|下一步建议)\s*$/;
+  const maintenanceNoticePattern = /^>\s+.*(?:质量门控|Low-coverage|No window-valid|coverage|partial evidence|Grok|fetch|fallback 模型|主终稿模型失败|终稿模型|请求失败|结构过弱|诊断|覆盖|风险|证据不足|本日报仅代表部分样本)/i;
+  const lines = String(markdown ?? '').replace(/\r/g, '').split('\n');
+  const kept = [];
+  let skipping = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^##\s+/.test(trimmed)) {
+      skipping = maintenanceHeadingPattern.test(trimmed);
+      if (skipping) continue;
+    }
+    if (maintenanceNoticePattern.test(trimmed)) continue;
+    if (!skipping) kept.push(line);
+  }
+
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 export function mergeIndexEntries(previousEntries, nextEntry, limit = 30) {
   const entries = Array.isArray(previousEntries) ? previousEntries : [];
   const filtered = entries.filter((entry) => !(entry?.date === nextEntry.date && entry?.runId === nextEntry.runId));
@@ -248,9 +268,56 @@ function buildReportLinks(runDate, runId, siteOrigin = '') {
   const normalizedOrigin = String(siteOrigin ?? '').trim().replace(/\/+$/, '');
   const reportPath = `/reports/${runDate}/${runId}`;
   const rawPath = `/raw/${runDate}/${runId}`;
+  const maintenancePath = `/maintenance/${runDate}/${runId}`;
   return {
     reportUrl: normalizedOrigin ? `${normalizedOrigin}${reportPath}` : reportPath,
     rawUrl: normalizedOrigin ? `${normalizedOrigin}${rawPath}` : rawPath,
+    maintenanceUrl: normalizedOrigin ? `${normalizedOrigin}${maintenancePath}` : maintenancePath,
+  };
+}
+
+function buildMaintenanceArtifact({ runDate, runId, analyzeResult, reportKey, markdownKey, analyzeResultKey, fetchResultKey }) {
+  const meta = analyzeResult?.meta ?? {};
+  return {
+    run: {
+      date: runDate,
+      runId,
+      analyzedAt: meta.analyzedAt ?? null,
+      analysisProfile: meta.analysisProfile ?? null,
+      model: meta.briefModel ?? meta.model ?? null,
+    },
+    quality: analyzeResult?.quality ?? null,
+    coverage: meta.coverage ?? null,
+    fetchDiagnosis: meta.fetchDiagnosis ?? null,
+    counts: {
+      tweetCount: meta.tweetCount ?? null,
+      signalTweetCount: meta.signalTweetCount ?? null,
+      promptSignalTweetCount: meta.promptSignalTweetCount ?? null,
+      omittedSignalTweetCount: meta.omittedSignalTweetCount ?? null,
+      noiseTweetCount: meta.noiseTweetCount ?? null,
+      warningCount: meta.warningCount ?? null,
+    },
+    pipeline: {
+      answerSource: analyzeResult?.answer?.source ?? null,
+      generatedBy: analyzeResult?.answer?.generatedBy ?? null,
+      generatedByFallbackModel: meta.generatedByFallbackModel ?? false,
+      candidateSelectionMode: meta.candidateSelectionMode ?? null,
+      screeningChunkCount: meta.screeningChunkCount ?? null,
+      screeningCandidateCount: meta.screeningCandidateCount ?? null,
+      screeningFallbackChunkCount: meta.screeningFallbackChunkCount ?? null,
+      evidenceBlockMode: meta.evidenceBlockMode ?? null,
+      summaryChunkCount: meta.summaryChunkCount ?? null,
+      summaryFailedChunkCount: meta.summaryFailedChunkCount ?? null,
+      finalDraftAttempts: meta.finalDraftAttempts ?? [],
+      primaryBriefFailureSummary: meta.primaryBriefFailureSummary ?? null,
+      rosterScoringError: meta.rosterScoringError ?? null,
+    },
+    artifacts: {
+      reportKey,
+      markdownKey,
+      analyzeResultKey,
+      fetchResultKey,
+    },
   };
 }
 
@@ -281,12 +348,13 @@ export async function publishRunArtifacts({
   await mkdir(publishedRunDir, { recursive: true });
 
   const finalMarkdown = await readFile(finalReportPath, 'utf8');
+  const publicMarkdown = stripMaintenanceSections(finalMarkdown);
   const analyzeResult = JSON.parse(await readFile(analyzeResultPath, 'utf8'));
-  const finalHtml = renderMarkdownDocument(finalMarkdown, {
-    title: extractTitle(finalMarkdown, `X 日报 | ${runDate}`),
+  const finalHtml = renderMarkdownDocument(publicMarkdown, {
+    title: extractTitle(publicMarkdown, `X 日报 | ${runDate}`),
   });
 
-  await copyFile(finalReportPath, resolve(publishedRunDir, 'final.md'));
+  await writeFile(resolve(publishedRunDir, 'final.md'), publicMarkdown, 'utf8');
   await writeFile(resolve(publishedRunDir, 'final.html'), finalHtml, 'utf8');
   await copyFile(analyzeResultPath, resolve(publishedRunDir, 'analyze.result.json'));
   if (fetchResultPath) {
@@ -297,20 +365,34 @@ export async function publishRunArtifacts({
   const markdownKey = `reports/${runDate}/${runId}/final.md`;
   const analyzeResultKey = `reports/${runDate}/${runId}/analyze.result.json`;
   const fetchResultKey = fetchResultPath ? `reports/${runDate}/${runId}/fetch.result.json` : null;
+  const maintenanceKey = `reports/${runDate}/${runId}/maintenance.json`;
+  const maintenanceArtifact = buildMaintenanceArtifact({
+    runDate,
+    runId,
+    analyzeResult,
+    reportKey,
+    markdownKey,
+    analyzeResultKey,
+    fetchResultKey,
+  });
+  await writeFile(resolve(publishedRunDir, 'maintenance.json'), JSON.stringify(maintenanceArtifact, null, 2), 'utf8');
+
   const updatedAt = String(publishedAt ?? analyzeResult?.meta?.analyzedAt ?? new Date().toISOString());
   const links = buildReportLinks(runDate, runId, siteOrigin);
   const entry = {
     date: runDate,
     runId,
-    title: extractTitle(finalMarkdown, `X 日报 | ${runDate}`),
-    summary: extractSummary(finalMarkdown),
+    title: extractTitle(publicMarkdown, `X 日报 | ${runDate}`),
+    summary: extractSummary(publicMarkdown),
     reportKey,
     markdownKey,
     analyzeResultKey,
     fetchResultKey,
+    maintenanceKey,
     updatedAt,
     reportUrl: links.reportUrl,
     rawUrl: links.rawUrl,
+    maintenanceUrl: links.maintenanceUrl,
     quality: analyzeResult?.quality ?? null,
   };
 
@@ -331,6 +413,7 @@ export async function publishRunArtifacts({
     markdownKey,
     analyzeResultKey,
     fetchResultKey,
+    maintenanceKey,
     latestPath: resolve(outputRoot, 'latest.json'),
     indexPath: resolve(outputRoot, 'index.json'),
   };

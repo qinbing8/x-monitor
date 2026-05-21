@@ -66,6 +66,42 @@ test('handleRequest renders history page from index.json', async () => {
   assert.match(html, /2026-03-23/);
 });
 
+test('handleRequest serves latest maintenance diagnostics as JSON', async () => {
+  const env = createMockEnv({
+    'reports/latest.json': JSON.stringify({
+      maintenanceKey: 'reports/2026-03-23/run-080000-abcdef12/maintenance.json',
+    }),
+    'reports/2026-03-23/run-080000-abcdef12/maintenance.json': JSON.stringify({
+      quality: { needsReview: true },
+      coverage: { coveredAccountCount: 2, totalAccountCount: 10 },
+    }),
+  });
+
+  const response = await handleRequest(new Request('https://report.example.com/maintenance/latest'), env);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(body.quality.needsReview, true);
+  assert.equal(body.coverage.totalAccountCount, 10);
+});
+
+test('handleRequest serves maintenance diagnostics for a specific run', async () => {
+  const env = createMockEnv({
+    'reports/2026-03-23/run-080000-abcdef12/maintenance.json': JSON.stringify({
+      run: { date: '2026-03-23', runId: 'run-080000-abcdef12' },
+      fetchDiagnosis: { status: 'ready' },
+    }),
+  });
+
+  const response = await handleRequest(new Request('https://report.example.com/maintenance/2026-03-23/run-080000-abcdef12'), env);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.run.runId, 'run-080000-abcdef12');
+  assert.equal(body.fetchDiagnosis.status, 'ready');
+});
+
 test('default export delegates fetch requests to handleRequest', async () => {
   const env = createMockEnv({
     'reports/latest.json': JSON.stringify({

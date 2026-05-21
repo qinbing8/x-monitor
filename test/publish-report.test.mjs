@@ -25,7 +25,7 @@ test('renderMarkdownDocument converts report markdown into readable HTML', () =>
   assert.match(html, /<a href="https:\/\/x\.com\/alice\/status\/190001">https:\/\/x\.com\/alice\/status\/190001<\/a>/);
   assert.match(html, /<main class="report-shell">/);
   assert.match(html, /<article class="report-document">/);
-  assert.match(html, /font-family: Charter, "PingFang SC"/);
+  assert.match(html, /font-family: "Inter", "PingFang SC"/);
   assert.match(html, /@page \{ size: A4; margin: 20mm 22mm 22mm; \}/);
 });
 
@@ -74,7 +74,17 @@ test('publishRunArtifacts writes publishable files and latest/index metadata', a
   const summaryPath = resolve(root, '.tmp', 'run-summary.json');
   const previousIndexPath = resolve(root, '.tmp', 'previous-index.json');
 
-  await writeFile(finalReportPath, FIXTURE_ANALYZE_MARKDOWN, 'utf8');
+  await writeFile(
+    finalReportPath,
+    [
+      '# X 日报 | 2026-03-23',
+      '',
+      '> Low-coverage digest: 1 incomplete account. Treat this brief as partial evidence.',
+      '',
+      FIXTURE_ANALYZE_MARKDOWN.replace(/^# X 日报 \| 2026-03-23\n\n/, ''),
+    ].join('\n'),
+    'utf8',
+  );
   await writeFile(
     analyzeResultPath,
     JSON.stringify({
@@ -82,7 +92,9 @@ test('publishRunArtifacts writes publishable files and latest/index metadata', a
         analyzedAt: '2026-03-23T08:10:00.000Z',
       },
       quality: {
-        needsReview: false,
+        needsReview: true,
+        status: 'degraded',
+        note: 'Low-coverage digest: 1 incomplete account.',
       },
     }, null, 2),
     'utf8',
@@ -128,13 +140,22 @@ test('publishRunArtifacts writes publishable files and latest/index metadata', a
   const latestJson = JSON.parse(await readFile(resolve(outputDir, 'reports', 'latest.json'), 'utf8'));
   const indexJson = JSON.parse(await readFile(resolve(outputDir, 'reports', 'index.json'), 'utf8'));
   const copiedFetchResult = JSON.parse(await readFile(resolve(publishedDir, 'fetch.result.json'), 'utf8'));
+  const publicMarkdown = await readFile(resolve(publishedDir, 'final.md'), 'utf8');
+  const maintenanceJson = JSON.parse(await readFile(resolve(publishedDir, 'maintenance.json'), 'utf8'));
 
   assert.equal(published.runDate, '2026-03-23');
   assert.equal(published.runId, 'run-080000-abcdef12');
   assert.match(finalHtml, /<h1 id="x-日报-2026-03-23">X 日报 \| 2026-03-23<\/h1>/);
+  assert.doesNotMatch(finalHtml, /抓取覆盖与缺口|覆盖与风险|质量门控|Low-coverage digest/);
+  assert.doesNotMatch(publicMarkdown, /抓取覆盖与缺口|覆盖与风险|质量门控|Low-coverage digest/);
   assert.equal(latestJson.runId, 'run-080000-abcdef12');
   assert.equal(latestJson.reportUrl, 'https://report.example.com/reports/2026-03-23/run-080000-abcdef12');
+  assert.equal(latestJson.maintenanceUrl, 'https://report.example.com/maintenance/2026-03-23/run-080000-abcdef12');
   assert.equal(indexJson.length, 1);
   assert.equal(indexJson[0].markdownKey, 'reports/2026-03-23/run-080000-abcdef12/final.md');
   assert.equal(copiedFetchResult.meta.fetchedAt, '2026-03-23T08:01:00.000Z');
+  assert.equal(maintenanceJson.run.date, '2026-03-23');
+  assert.equal(maintenanceJson.artifacts.analyzeResultKey, 'reports/2026-03-23/run-080000-abcdef12/analyze.result.json');
+  assert.equal(maintenanceJson.quality.needsReview, true);
+  assert.match(maintenanceJson.quality.note, /Low-coverage digest/);
 });
