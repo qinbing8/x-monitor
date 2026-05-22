@@ -291,6 +291,34 @@ function chunkArray(items, chunkSize) {
   return chunks;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createRequestGate(minIntervalMs) {
+  const intervalMs = Math.max(0, Number(minIntervalMs ?? 0) || 0);
+  let nextStartAt = 0;
+  let queue = Promise.resolve();
+
+  return {
+    intervalMs,
+    async wait() {
+      if (intervalMs <= 0) return;
+      queue = queue.then(async () => {
+        const waitMs = Math.max(0, nextStartAt - Date.now());
+        if (waitMs > 0) await sleep(waitMs);
+        nextStartAt = Date.now() + intervalMs;
+      });
+      await queue;
+    },
+  };
+}
+
+async function postRateLimitedChatCompletions({ requestGate, ...options } = {}) {
+  await requestGate?.wait?.();
+  return postChatCompletions(options);
+}
+
 function escapeCsvValue(value) {
   const text = value == null ? '' : String(value);
   return `"${text.replace(/"/g, '""')}"`;
@@ -740,6 +768,7 @@ async function runSeedBatch({
   referenceTime,
   attemptKind = 'initial',
   round = 0,
+  requestGate,
   logger,
 } = {}) {
   const resolvedBatchId = batchId ?? `batch-${batchIndex + 1}`;
@@ -772,7 +801,8 @@ async function runSeedBatch({
   });
   try {
     const completion = await withRetry(
-      () => postChatCompletions({
+      () => postRateLimitedChatCompletions({
+        requestGate,
         baseUrl: profile.provider.baseUrl,
         apiKey: profile.provider.apiKey,
         apiProtocol: profile.provider.api ?? profile.apiProtocol,
@@ -949,7 +979,7 @@ function resolveRefetchRoundBatchSize(orderedSeeds, seedAttempts, refetchConfig)
   return shouldSplit ? 1 : refetchConfig.batchSize;
 }
 
-async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchImpl, referenceTime, concurrency, attemptKind = 'initial', round = 0, batchIdBuilder, logger } = {}) {
+async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchImpl, referenceTime, concurrency, attemptKind = 'initial', round = 0, batchIdBuilder, requestGate, logger } = {}) {
   const batchResults = [];
   const startedAt = Date.now();
   const totalSeedCount = seedBatches.reduce((sum, batch) => sum + batch.length, 0);
@@ -974,6 +1004,7 @@ async function executeSeedBatches({ seedBatches, promptTemplate, profile, fetchI
         referenceTime,
         attemptKind,
         round,
+        requestGate,
         logger: logger?.child(`batch_${offset + index + 1}`),
       })),
     );
@@ -1223,7 +1254,7 @@ function extractPrecheckCsvPayload(text) {
   return null;
 }
 
-export async function runActivityPrecheck({ seeds, profile, fetchImpl, referenceTime, precheckConfig, logger } = {}) {
+export async function runActivityPrecheck({ seeds, profile, fetchImpl, referenceTime, precheckConfig, requestGate, logger } = {}) {
   const promptPath = resolveMaybeRelative(
     undefined,
     precheckConfig.promptFile,
@@ -1267,7 +1298,8 @@ export async function runActivityPrecheck({ seeds, profile, fetchImpl, reference
     const batchStartedAt = Date.now();
     try {
       const completion = await withRetry(
-        () => postChatCompletions({
+        () => postRateLimitedChatCompletions({
+          requestGate,
           baseUrl: profile.provider.baseUrl,
           apiKey: profile.provider.apiKey,
           apiProtocol: profile.provider.api ?? profile.apiProtocol,
@@ -1424,6 +1456,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
   const effectiveBatchSize = Math.max(1, Number(batchSize ?? profile.batchSize ?? 10));
   const effectiveConcurrency = Math.max(1, Number(profile.concurrency ?? 1));
   const refetchConfig = resolveRefetchConfig(profile, effectiveConcurrency);
+  const requestGate = createRequestGate(profile.requestMinIntervalMs);
   const timeWindowHours = profile.timeWindowHours ?? 24;
   const runDate = resolveRunDate(date);
   const resolvedReferenceTime = resolveReferenceTime(referenceTime);
@@ -1457,6 +1490,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     staticFilterZeroPosts: staticFilterEnabled,
     refetchEnabled: refetchConfig.enabled,
     refetchMaxRounds: refetchConfig.maxRounds,
+    requestMinIntervalMs: requestGate.intervalMs,
   });
 
   if (precheckEnabled) {
@@ -1468,6 +1502,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       fetchImpl,
       referenceTime: resolvedReferenceTime,
       precheckConfig: resolvedPrecheckConfig,
+      requestGate,
       logger: logger.child('precheck'),
     });
     effectiveSeeds = precheckResult.activeSeeds;
@@ -1505,6 +1540,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
       refetchMaxRounds: refetchConfig.maxRounds,
       refetchBatchSize: refetchConfig.batchSize,
       refetchConcurrency: refetchConfig.concurrency,
+      requestMinIntervalMs: requestGate.intervalMs,
     },
     seeds,
     dormantAccounts,
@@ -1520,6 +1556,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
     concurrency: effectiveConcurrency,
     attemptKind: 'initial',
     round: 0,
+    requestGate,
     logger: logger.child('initial'),
   });
   recordSeedAttempts(seedAttempts, seedById, executedBatchResults);
@@ -1559,6 +1596,7 @@ export async function runFetch({ configPath, date, seedCsvPath, batchSize, fetch
         attemptKind: 'refetch',
         round,
         batchIdBuilder: (index) => `refetch-r${round}-batch-${index + 1}`,
+        requestGate,
         logger: logger.child(`refetch_round_${round}`),
       });
       executedBatchResults.push(...refetchResults);

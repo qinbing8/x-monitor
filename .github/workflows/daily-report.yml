@@ -221,12 +221,12 @@ jobs:
           config.analysis.profiles['gpt-default'].rosterModelRef = 'gpt-roster';
           const fetchProfile = config.fetch?.profiles?.['grok-default'];
           if (fetchProfile) {
-            // Keep the live fetch profile narrow in GitHub Actions, but allow modest parallelism
-            // so individual provider stalls do not serialize the entire roster.
+            // Keep the live fetch profile below the provider's 20 requests/minute cap.
             fetchProfile.timeoutMs = 100000;
             fetchProfile.maxOutputTokens = 1600;
             fetchProfile.batchSize = 1;
-            fetchProfile.concurrency = 5;
+            fetchProfile.concurrency = 1;
+            fetchProfile.requestMinIntervalMs = 3500;
             fetchProfile.promptFile = 'assets/prompts/grok-fetch-live.txt';
             fetchProfile.retry = {
               ...(fetchProfile.retry ?? {}),
@@ -235,7 +235,7 @@ jobs:
             };
             fetchProfile.refetchMaxRounds = 1;
             fetchProfile.refetchBatchSize = 1;
-            fetchProfile.refetchConcurrency = 5;
+            fetchProfile.refetchConcurrency = 1;
             if (fetchProfile.precheck && typeof fetchProfile.precheck === 'object') {
               fetchProfile.precheck = {
                 ...fetchProfile.precheck,

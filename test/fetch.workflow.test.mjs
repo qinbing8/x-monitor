@@ -34,6 +34,49 @@ function extractPromptHandles(prompt) {
   return [...String(prompt ?? '').matchAll(/"handle"\s*:\s*"([^"]+)"/g)].map((match) => match[1]);
 }
 
+test('runFetch spaces provider requests when requestMinIntervalMs is configured', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+    Object.assign(config.fetch.profiles['grok-default'], {
+      batchSize: 1,
+      concurrency: 2,
+      refetchMaxRounds: 0,
+      requestMinIntervalMs: 25,
+    });
+    await writeFile(fixture.configPath, JSON.stringify(config, null, 2));
+
+    const requestStartedAts = [];
+    const result = await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: async (_url, options) => {
+        requestStartedAts.push(Date.now());
+        const body = JSON.parse(options?.body ?? '{}');
+        const prompt = String(body.messages?.[0]?.content ?? body.input?.[0]?.content ?? '');
+        const rows = extractPromptHandles(prompt).map((handle) => {
+          const tweetId = handle === 'alice' ? '190301' : '190302';
+          return `"${handle}","${tweetId}","2026-03-23T03:00:00Z","${handle} request spacing works.","https://x.com/${handle}/status/${tweetId}"`;
+        });
+        return createCompletionFetch([
+          'username,tweet_id,created_at,text,original_url',
+          ...rows,
+        ].join('\n'))(_url, options);
+      },
+    });
+
+    assert.equal(result.tweetCount, 2);
+    assert.equal(requestStartedAts.length, 2);
+    assert.ok(
+      requestStartedAts[1] - requestStartedAts[0] >= 20,
+      `expected requests to be spaced, got ${requestStartedAts[1] - requestStartedAts[0]}ms`,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runFetch refetches no_tweets_found accounts in a second pass and keeps improved coverage', async () => {
   const fixture = await createMockSkillFixture();
   try {

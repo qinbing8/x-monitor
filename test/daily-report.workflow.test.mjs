@@ -12,9 +12,10 @@ test('daily-report workflow keeps live fetch overrides bounded for GitHub Action
 
   assert.match(workflow, /fetchProfile\.timeoutMs = 100000;/);
   assert.match(workflow, /fetchProfile\.batchSize = 1;/);
-  assert.match(workflow, /fetchProfile\.concurrency = 5;/);
+  assert.match(workflow, /fetchProfile\.concurrency = 1;/);
+  assert.match(workflow, /fetchProfile\.requestMinIntervalMs = 3500;/);
   assert.match(workflow, /fetchProfile\.refetchBatchSize = 1;/);
-  assert.match(workflow, /fetchProfile\.refetchConcurrency = 5;/);
+  assert.match(workflow, /fetchProfile\.refetchConcurrency = 1;/);
 });
 
 test('daily-report workflow wires independent fallback brief model secrets into runtime config', async () => {
