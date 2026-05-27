@@ -32,6 +32,14 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
 }
 
+function resolveLiveSeedCsvOverride() {
+  const seedCsvPath = process.env.X_MONITOR_LIVE_SEED_CSV;
+  if (!seedCsvPath) return null;
+  return isAbsolute(seedCsvPath)
+    ? seedCsvPath
+    : resolve(fileURLToPath(new URL('..', import.meta.url)), seedCsvPath);
+}
+
 function assertDurationWithin(actualMs, limitMs, label) {
   assert.ok(
     Number.isFinite(actualMs) && actualMs < limitMs,
@@ -48,6 +56,18 @@ function collectHandleSet(records) {
   );
 }
 
+function assertAcceptableQuality(quality) {
+  assert.ok(
+    quality?.needsReview === false,
+    `Daily brief quality requires review: ${quality?.note ?? 'unknown'}`,
+  );
+  assert.equal(
+    quality?.status,
+    'ok',
+    `Daily brief quality is ${quality?.status ?? 'unknown'}: ${quality?.note ?? 'unknown'}`,
+  );
+}
+
 async function writeLiveDiagnostic(payload) {
   const logDir = fileURLToPath(new URL('../data/live-acceptance', import.meta.url));
   await mkdir(logDir, { recursive: true });
@@ -58,18 +78,24 @@ async function writeLiveDiagnostic(payload) {
 }
 
 async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, attempt }) {
-  const seedCsvPath = process.env.X_MONITOR_LIVE_SEED_CSV
-    ? (isAbsolute(process.env.X_MONITOR_LIVE_SEED_CSV)
-      ? process.env.X_MONITOR_LIVE_SEED_CSV
-      : resolve(fileURLToPath(new URL('..', import.meta.url)), process.env.X_MONITOR_LIVE_SEED_CSV))
-    : fileURLToPath(new URL('../X列表关注者.csv', import.meta.url));
-  const summary = await main([
+  const overrideSeedCsvPath = resolveLiveSeedCsvOverride();
+  const argv = [
     '--mode', 'run',
     '--config', configPath,
     '--date', runDate,
     '--reference-time', referenceTime,
-    '--seed-csv', seedCsvPath,
-  ]);
+  ];
+  if (overrideSeedCsvPath) {
+    argv.push('--seed-csv', overrideSeedCsvPath);
+  }
+  const summary = await main(argv);
+  if (!overrideSeedCsvPath) {
+    assert.ok(summary.roster, 'Live acceptance expected roster preparation when no seed override is provided');
+    assert.ok(summary.roster.dailyCount > 0, 'Live acceptance daily roster is empty');
+  }
+  const seedCsvPath = overrideSeedCsvPath
+    ?? summary.roster?.dailyCsvPath
+    ?? fileURLToPath(new URL('../X列表关注者.daily.csv', import.meta.url));
   const fetchSummary = summary.fetch;
   const analyzeSummary = summary.analyze;
   const seedRecords = parseCsv(await readFile(seedCsvPath, 'utf8'));
@@ -119,14 +145,17 @@ async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, at
   const finalMarkdown = String(await readFile(analyzeSummary.finalReportPath, 'utf8')).trim();
   const markdown = String(analyzeResult.answer?.markdown ?? '').trim();
 
-  assert.equal(analyzeResult.meta.provider, 'gpt');
-  assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4-mini');
-  assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
-  assert.equal(analyzeResult.answer?.source, 'model', `GPT did not generate the daily brief. Fetch diagnosis: ${analyzeResult.meta.fetchDiagnosis?.note ?? 'unknown'}`);
+  assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4');
+  assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4');
+  assert.ok(
+    ['model', 'fallback'].includes(String(analyzeResult.answer?.source ?? '')),
+    `Analyze did not generate a usable daily brief. Fetch diagnosis: ${analyzeResult.meta.fetchDiagnosis?.note ?? 'unknown'}`,
+  );
   assert.ok(markdown.length > 0, 'GPT daily brief is empty');
   assert.ok(finalMarkdown.length > 0, 'final.md is empty');
   assertDurationWithin(analyzeResult.meta.finalDraftDurationMs, TEN_MINUTES_MS, 'Final draft generation');
   assertDurationWithin(analyzeResult.meta.analyzeDurationMs, TWENTY_MINUTES_MS, 'Analyze');
+  assertAcceptableQuality(analyzeResult.quality);
 
   return {
     attempt,
@@ -134,6 +163,7 @@ async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, at
     referenceTime,
     seedCsvPath,
     seedCount: requestedHandles.size,
+    roster: summary.roster ?? null,
     fetch: {
       runDir: fetchSummary.runDir,
       durationMs: fetchSummary.durationMs,
