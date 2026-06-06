@@ -22,7 +22,10 @@ test('renderMarkdownDocument converts report markdown into readable HTML', () =>
   assert.match(html, /<h1 id="x-日报-2026-03-23">X 日报 \| 2026-03-23<\/h1>/);
   assert.match(html, /<h2 id="今日要点摘要deep-brief">今日要点摘要（Deep Brief）<\/h2>/);
   assert.match(html, /<code>@alice<\/code>/);
-  assert.match(html, /<a href="https:\/\/x\.com\/alice\/status\/190001">https:\/\/x\.com\/alice\/status\/190001<\/a>/);
+  assert.match(html, /<a href="https:\/\/x\.com\/alice\/status\/190001" class="source-link">查看原文<\/a>/);
+  assert.doesNotMatch(html, /<a href="https:\/\/x\.com\/alice\/status\/190001">https:\/\/x\.com\/alice\/status\/190001<\/a>/);
+  assert.equal((html.match(/class="source-link">查看原文/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /<li>\s*<\/li>/);
   assert.match(html, /<main class="report-shell">/);
   assert.match(html, /<article class="report-document">/);
   assert.match(html, /font-family: "Inter", "PingFang SC"/);

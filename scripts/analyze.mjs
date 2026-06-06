@@ -197,17 +197,92 @@ function isStronglyPromotionalDigestItem(item) {
   return countPromotionalSignals(item?.text) >= 3;
 }
 
-function scoreDigestItem(item) {
+function normalizeRankingMetric(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.max(0, Math.round(value));
+  const text = String(value).replace(/,/g, '').trim();
+  if (!text || /^(-|n\/a|unknown|null)$/i.test(text)) return null;
+  const compactMatch = text.match(/^([+-]?\d+(?:\.\d+)?)\s*([kmb]|万|亿)?\+?(?:\s*(?:views?|likes?|reposts?|retweets?|comments?|replies|reply|观看|点赞|转发|评论|回复))?$/i);
+  if (!compactMatch) return null;
+  const base = Number(compactMatch[1]);
+  if (!Number.isFinite(base)) return null;
+  const suffix = String(compactMatch[2] ?? '').toLowerCase();
+  const multiplier = {
+    k: 1_000,
+    m: 1_000_000,
+    b: 1_000_000_000,
+    '万': 10_000,
+    '亿': 100_000_000,
+  }[suffix] ?? 1;
+  return Math.max(0, Math.round(base * multiplier));
+}
+
+function metricLogScore(value, weight) {
+  const metric = normalizeRankingMetric(value);
+  if (metric === null) return 0;
+  return Math.log10(metric + 1) * weight;
+}
+
+function buildTweetMetrics(item) {
+  return {
+    viewCount: normalizeRankingMetric(item?.viewCount),
+    likeCount: normalizeRankingMetric(item?.likeCount),
+    replyCount: normalizeRankingMetric(item?.replyCount),
+    repostCount: normalizeRankingMetric(item?.repostCount),
+  };
+}
+
+function buildAccountSignals(item) {
+  return {
+    followersCount: normalizeRankingMetric(item?.source?.followersCount),
+    verified: item?.source?.verified === true,
+    isBlueVerified: item?.source?.isBlueVerified === true,
+  };
+}
+
+function roundScore(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function buildDigestRankingBreakdown(item) {
   const text = normalizeTweetTextForPrompt(item?.text);
-  let score = Math.min(text.length, 240);
-  if (/https?:\/\//i.test(text)) score += 120;
-  if (/(github|demo|release|launched|launch|benchmark|paper|dataset|tutorial|guide|agent|model|open\s+source)/i.test(text)) score += 80;
-  if (/\d/.test(text)) score += 20;
+  let contentScore = Math.min(text.length, 240);
+  if (/https?:\/\//i.test(text)) contentScore += 120;
+  if (/(github|demo|release|launched|launch|benchmark|paper|dataset|tutorial|guide|agent|model|open\s+source)/i.test(text)) contentScore += 80;
+  if (/\d/.test(text)) contentScore += 20;
+
+  const metrics = buildTweetMetrics(item);
+  const engagementScore =
+    metricLogScore(metrics.viewCount, 5)
+    + metricLogScore(metrics.likeCount, 18)
+    + metricLogScore(metrics.replyCount, 12)
+    + metricLogScore(metrics.repostCount, 16);
+
+  const account = buildAccountSignals(item);
+  const accountScore =
+    metricLogScore(account.followersCount, 8)
+    + (account.verified ? 8 : 0)
+    + (account.isBlueVerified ? 4 : 0);
+
   const promotionalSignalCount = countPromotionalSignals(text);
+  let penaltyScore = 0;
   if (promotionalSignalCount >= 3) {
-    score -= 220 + ((promotionalSignalCount - 3) * 40);
+    penaltyScore = 220 + ((promotionalSignalCount - 3) * 40);
   }
-  return score;
+  const totalScore = contentScore + engagementScore + accountScore - penaltyScore;
+  return {
+    contentScore: roundScore(contentScore),
+    engagementScore: roundScore(engagementScore),
+    accountScore: roundScore(accountScore),
+    penaltyScore: roundScore(penaltyScore),
+    totalScore: roundScore(totalScore),
+    metrics,
+    account,
+  };
+}
+
+function scoreDigestItem(item) {
+  return buildDigestRankingBreakdown(item).totalScore;
 }
 
 function compareDigestItems(left, right) {
@@ -332,6 +407,13 @@ function buildDigestSummaryPrompt({ runDate, items, chunkIndex, totalChunks } = 
       created_at: item.createdAt,
       text: compactTweetText(item.text, MAX_SCREENING_TEXT_CHARS),
       original_url: item.originalUrl,
+      view_count: normalizeRankingMetric(item.viewCount),
+      like_count: normalizeRankingMetric(item.likeCount),
+      reply_count: normalizeRankingMetric(item.replyCount),
+      repost_count: normalizeRankingMetric(item.repostCount),
+      followers_count: normalizeRankingMetric(item.source?.followersCount),
+      verified: item.source?.verified === true,
+      ranking: buildDigestRankingBreakdown(item),
     })),
   };
 
@@ -532,6 +614,13 @@ function buildCandidateScreeningPrompt({ runDate, items, chunkIndex, totalChunks
       created_at: item.createdAt,
       text: compactTweetText(item.text, MAX_SCREENING_TEXT_CHARS),
       original_url: item.originalUrl,
+      view_count: normalizeRankingMetric(item.viewCount),
+      like_count: normalizeRankingMetric(item.likeCount),
+      reply_count: normalizeRankingMetric(item.replyCount),
+      repost_count: normalizeRankingMetric(item.repostCount),
+      followers_count: normalizeRankingMetric(item.source?.followersCount),
+      verified: item.source?.verified === true,
+      ranking: buildDigestRankingBreakdown(item),
     })),
   };
 
@@ -785,6 +874,33 @@ async function screenSignalTweetsWithModel({ runDate, signalItems, profile, fetc
   };
 }
 
+function attachRankingDetails(items) {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    ...item,
+    ranking: item?.ranking ?? buildDigestRankingBreakdown(item),
+  }));
+}
+
+function buildRankingSummary({ signalItems = [], digestItems = [] } = {}) {
+  const allItems = Array.isArray(signalItems) ? signalItems : [];
+  const selectedItems = Array.isArray(digestItems) ? digestItems : [];
+  const metricFields = ['viewCount', 'likeCount', 'replyCount', 'repostCount'];
+  const metricCoverage = Object.fromEntries(metricFields.map((field) => [
+    field,
+    allItems.filter((item) => normalizeRankingMetric(item?.[field]) !== null).length,
+  ]));
+  const selectedScores = selectedItems
+    .map((item) => item?.ranking?.totalScore ?? buildDigestRankingBreakdown(item).totalScore)
+    .filter((score) => Number.isFinite(Number(score)));
+  return {
+    scoredTweetCount: allItems.length,
+    selectedTweetCount: selectedItems.length,
+    metricCoverage,
+    selectedScoreMin: selectedScores.length > 0 ? Math.min(...selectedScores) : null,
+    selectedScoreMax: selectedScores.length > 0 ? Math.max(...selectedScores) : null,
+  };
+}
+
 export function resolveAnalyzeTimeoutMs(timeoutMs) {
   const parsed = Number(timeoutMs);
   const requestedTimeoutMs = Number.isFinite(parsed) ? parsed : 0;
@@ -841,7 +957,8 @@ async function prepareAnalyzePrompt({
     });
   }
 
-  const digestItems = Array.isArray(digestSelection?.digestItems) ? digestSelection.digestItems : [];
+  const digestItems = attachRankingDetails(Array.isArray(digestSelection?.digestItems) ? digestSelection.digestItems : []);
+  const rankingSummary = buildRankingSummary({ signalItems, digestItems });
   const omittedSignalTweetCount = Math.max(0, signalItems.length - digestItems.length);
   const promptPath = resolveMaybeRelative(skillRoot, profile.promptFile);
   const promptTemplate = await readFile(promptPath, 'utf8');
@@ -888,6 +1005,7 @@ async function prepareAnalyzePrompt({
     signalItems,
     noiseItems,
     digestItems,
+    rankingSummary,
     omittedSignalTweetCount,
     digestSelection,
     evidenceBlockMode,
@@ -915,6 +1033,7 @@ function buildAnalyzeInputArtifact({
   summaryChunkCount,
   summaryFailedChunkCount,
   preparedEvidenceBlock,
+  rankingSummary,
   items,
   accounts,
   warnings,
@@ -941,6 +1060,7 @@ function buildAnalyzeInputArtifact({
       summaryFailedChunkCount,
       preparedEvidenceBlock,
       promptItems: digestItems,
+      rankingSummary,
     },
     evidence: {
       meta: analyzeInput?.evidence?.meta ?? {},
@@ -1017,6 +1137,7 @@ function buildFinalDraftFailureArtifact({
   screeningModelId,
   rosterScoring,
   rosterScoringError,
+  rankingSummary,
   renderedPrompt,
   coverage,
   fetchDiagnosis,
@@ -1051,6 +1172,7 @@ function buildFinalDraftFailureArtifact({
     summaryChunkCount,
     summaryFailedChunkCount,
     summaryItemCount: chunkSummaries.length,
+    rankingSummary,
     coverage,
     fetchDiagnosis,
     finalDraftAttempts,
@@ -1086,6 +1208,7 @@ async function finalizeAnalyzeRun({
   screeningModelId,
   rosterScoring,
   rosterScoringError,
+  rankingSummary,
   renderedPrompt,
   analyzeErrorFileName = 'analyze.error.json',
 } = {}) {
@@ -1198,6 +1321,7 @@ async function finalizeAnalyzeRun({
           screeningModelId,
           rosterScoring,
           rosterScoringError,
+          rankingSummary,
           renderedPrompt,
           coverage,
           fetchDiagnosis,
@@ -1261,6 +1385,7 @@ async function finalizeAnalyzeRun({
         screeningModelId,
         rosterScoring,
         rosterScoringError,
+        rankingSummary,
         renderedPrompt,
         coverage,
         fetchDiagnosis,
@@ -1370,6 +1495,7 @@ async function finalizeAnalyzeRun({
       summaryChunkCount,
       summaryFailedChunkCount,
       summaryItemCount: chunkSummaries.length,
+      rankingSummary,
       finalDraftAttempts,
       continuationRounds: continuationResult.continuationRounds,
       truncated: continuationResult.truncated,
@@ -1784,6 +1910,13 @@ export function buildTweetEvidenceBlock({
       created_at: item.createdAt,
       text: compactTweetText(item.text, MAX_DIGEST_EVIDENCE_TEXT_CHARS),
       original_url: item.originalUrl,
+      view_count: normalizeRankingMetric(item.viewCount),
+      like_count: normalizeRankingMetric(item.likeCount),
+      reply_count: normalizeRankingMetric(item.replyCount),
+      repost_count: normalizeRankingMetric(item.repostCount),
+      followers_count: normalizeRankingMetric(item.source?.followersCount),
+      verified: item.source?.verified === true,
+      ranking: item.ranking ?? buildDigestRankingBreakdown(item),
       batch_id: item.batchId,
     })),
     warnings: summarizeWarningsForPrompt(warnings),
@@ -1932,6 +2065,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
       summaryChunkCount: prepared.summaryChunkCount,
       summaryFailedChunkCount: prepared.summaryFailedChunkCount,
       preparedEvidenceBlock: prepared.preparedEvidenceBlock,
+      rankingSummary: prepared.rankingSummary,
       items: prepared.items,
       accounts: prepared.accounts,
       warnings: prepared.warnings,
@@ -1963,6 +2097,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
       screeningModelId,
       rosterScoring: null,
       rosterScoringError: null,
+      rankingSummary: prepared.rankingSummary,
       renderedPrompt: prepared.renderedPrompt,
       analyzeErrorFileName: config.runtime?.artifacts?.analyzeError ?? 'analyze.error.json',
     });
@@ -2045,6 +2180,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
     summaryChunkCount: prepared.summaryChunkCount,
     summaryFailedChunkCount: prepared.summaryFailedChunkCount,
     preparedEvidenceBlock: prepared.preparedEvidenceBlock,
+    rankingSummary: prepared.rankingSummary,
     items,
     accounts,
     warnings,
@@ -2077,6 +2213,7 @@ export async function runAnalyze({ configPath, date, analysisProfile, analyzeInp
     screeningModelId: screeningProfile.modelId,
     rosterScoring,
     rosterScoringError,
+    rankingSummary: prepared.rankingSummary,
     renderedPrompt: prepared.renderedPrompt,
     analyzeErrorFileName: config.runtime?.artifacts?.analyzeError ?? 'analyze.error.json',
   });

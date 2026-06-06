@@ -18,10 +18,13 @@ test('acceptance contract keeps Grok and GPT responsibilities separated', async 
   assert.match(grokPrompt, /绝对只返回/);
   assert.match(grokPrompt, /开始时间（UTC）/);
   assert.match(grokPrompt, /结束时间（UTC）/);
+  assert.match(grokPrompt, /view_count,like_count,reply_count,repost_count/);
+  assert.match(grokPrompt, /无法获取时留空/);
 
   assert.match(analyzePrompt, /逐条阅读推文/);
   assert.match(analyzePrompt, /0-3 星价值判断/);
   assert.match(analyzePrompt, /闲聊/);
+  assert.match(analyzePrompt, /内容价值始终优先/);
 
   assert.match(rosterPrompt, /低价值闲聊/);
   assert.match(rosterPrompt, /high_value_tweet_count/);

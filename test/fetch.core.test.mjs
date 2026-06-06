@@ -47,3 +47,16 @@ test('parseTweetCsvResponse recovers headerless tweet CSV rows', () => {
   assert.equal(response.records[0].tweet_id, '190015');
   assert.equal(response.records[1].original_url, 'https://x.com/alice/status/190016');
 });
+
+test('parseTweetCsvResponse accepts optional engagement metric columns', () => {
+  const response = parseTweetCsvResponse([
+    'username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count',
+    '"alice","190099","2026-03-23T06:00:00Z","Benchmark notes with a repo link","https://x.com/alice/status/190099","12000","340","18","42"',
+  ].join('\n'));
+
+  assert.equal(response.records.length, 1);
+  assert.equal(response.records[0].view_count, '12000');
+  assert.equal(response.records[0].like_count, '340');
+  assert.equal(response.records[0].reply_count, '18');
+  assert.equal(response.records[0].repost_count, '42');
+});

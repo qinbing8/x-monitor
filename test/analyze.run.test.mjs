@@ -73,6 +73,10 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeInput.evidence.meta.fetchRawCsvPath, fetchSummary.fetchRawCsvPath);
     assert.equal(analyzeInput.evidence.items.length, 2);
     assert.equal(analyzeInput.evidence.accounts[1].status, 'no_tweets_found');
+    assert.equal(analyzeInput.task.rankingSummary.scoredTweetCount, 2);
+    assert.equal(analyzeInput.task.rankingSummary.selectedTweetCount, 2);
+    assert.equal(analyzeInput.task.rankingSummary.metricCoverage.viewCount, 0);
+    assert.ok(Number.isFinite(analyzeInput.task.promptItems[0].ranking.totalScore));
 
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.meta.analysisProfile, 'gpt-default');
@@ -82,6 +86,9 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4-mini');
     assert.equal(analyzeResult.meta.briefModel, 'gpt-5.4');
     assert.equal(analyzeResult.meta.tweetCount, 2);
+    assert.equal(analyzeResult.meta.rankingSummary.scoredTweetCount, 2);
+    assert.equal(analyzeResult.meta.rankingSummary.selectedTweetCount, 2);
+    assert.equal(analyzeResult.meta.rankingSummary.metricCoverage.viewCount, 0);
     assert.equal(analyzeResult.meta.coverage.failedAccountCount, 0);
     assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
     assert.ok(analyzeResult.meta.finalDraftDurationMs >= 0);

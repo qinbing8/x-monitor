@@ -126,6 +126,35 @@ test('runFetch smoke writes fetch artifacts from a controlled completion', async
   }
 });
 
+test('runFetch persists optional tweet engagement metrics when Grok returns them', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    const metricResponse = [
+      'username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count',
+      '"alice","190099","2026-03-23T06:00:00Z","Benchmark notes with a repo link","https://x.com/alice/status/190099","12.3K","1,200","18 reply","42"',
+    ].join('\n');
+
+    const result = await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(metricResponse),
+    });
+
+    const fetchRawCsv = await readText(result.fetchRawCsvPath);
+    assert.match(fetchRawCsv, /^username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count/m);
+    assert.match(fetchRawCsv, /"12300","1200","18","42"/);
+
+    const fetchResult = await readJson(result.fetchResultPath);
+    assert.equal(fetchResult.items[0].viewCount, 12300);
+    assert.equal(fetchResult.items[0].likeCount, 1200);
+    assert.equal(fetchResult.items[0].replyCount, 18);
+    assert.equal(fetchResult.items[0].repostCount, 42);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runFetch uses the current execution time as the default window anchor when only date is provided', async () => {
   const fixture = await createMockSkillFixture();
   try {

@@ -104,15 +104,57 @@ test('buildTweetEvidenceBlock formats tweet items and coverage into the analysis
         createdAt: '2026-03-23T01:02:03Z',
         text: 'Shipped a new CLI',
         originalUrl: 'https://x.com/alice/status/190001',
+        viewCount: 12000,
+        likeCount: 340,
+        replyCount: 18,
+        repostCount: 42,
         batchId: 'batch-1',
-        source: { seedId: 'seed-1' },
+        source: { seedId: 'seed-1', followersCount: 25000, verified: true },
       },
     ],
     warnings: [],
   });
   assert.match(block, /"tweet_id": "190001"/);
+  assert.match(block, /"view_count": 12000/);
+  assert.match(block, /"like_count": 340/);
+  assert.match(block, /"followers_count": 25000/);
   assert.match(block, /"no_tweet_handles": \[/);
   assert.match(block, /"bob"/);
+});
+
+test('buildTweetEvidenceBlock normalizes compact metric strings and leaves missing metrics uncovered', () => {
+  const block = buildTweetEvidenceBlock({
+    accounts: [
+      { seedId: 'seed-1', handle: 'alice', displayName: 'Alice Maker', status: 'covered', tweetCount: 2, notes: [] },
+    ],
+    items: [
+      {
+        tweetId: '190020',
+        username: 'alice',
+        createdAt: '2026-03-23T08:00:00Z',
+        text: 'Released a benchmark walkthrough with repo link https://example.com',
+        originalUrl: 'https://x.com/alice/status/190020',
+        viewCount: '12.3K',
+        likeCount: '1,200',
+        replyCount: '',
+        repostCount: '18 reposts',
+        source: { followersCount: '1.5M' },
+      },
+      {
+        tweetId: '190021',
+        username: 'alice',
+        createdAt: '2026-03-23T07:00:00Z',
+        text: 'A second useful update without public metrics',
+        originalUrl: 'https://x.com/alice/status/190021',
+      },
+    ],
+  });
+
+  assert.match(block, /"view_count": 12300/);
+  assert.match(block, /"like_count": 1200/);
+  assert.match(block, /"reply_count": null/);
+  assert.match(block, /"repost_count": 18/);
+  assert.match(block, /"followers_count": 1500000/);
 });
 
 test('selectDigestEvidenceItems caps prompt evidence by account and total count', () => {
@@ -131,6 +173,40 @@ test('selectDigestEvidenceItems caps prompt evidence by account and total count'
 
   assert.equal(selected.length, 4);
   assert.equal(selected.filter((item) => item.username === 'alice').length, 2);
+});
+
+test('selectDigestEvidenceItems uses engagement and follower weight as a mild tie-breaker', () => {
+  const items = [
+    {
+      tweetId: 'quiet',
+      username: 'smallbuilder',
+      createdAt: '2026-03-23T09:05:00Z',
+      text: 'Benchmark notes with docs and concrete agent workflow results https://example.com/quiet',
+      viewCount: null,
+      likeCount: null,
+      replyCount: null,
+      repostCount: null,
+      source: { followersCount: 120 },
+    },
+    {
+      tweetId: 'engaged',
+      username: 'knownbuilder',
+      createdAt: '2026-03-23T08:00:00Z',
+      text: 'Benchmark notes with docs and concrete agent workflow results https://example.com/engaged',
+      viewCount: 48000,
+      likeCount: 820,
+      replyCount: 64,
+      repostCount: 130,
+      source: { followersCount: 150000 },
+    },
+  ];
+
+  const selected = selectDigestEvidenceItems(items, {
+    maxTotalItems: 1,
+    maxItemsPerAccount: 1,
+  });
+
+  assert.equal(selected[0].tweetId, 'engaged');
 });
 
 test('selectDigestEvidenceItems defaults to the expanded digest evidence cap while keeping per-account limits', () => {

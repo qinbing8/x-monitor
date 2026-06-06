@@ -9,6 +9,8 @@ import { mapWithConcurrency } from './parallel.mjs';
 const CSV_FENCE_RE = /```(?:csv|text)?\s*([\s\S]*?)```/i;
 const CSV_HEADER_RE = /(^|\n)\s*"?username"?\s*,\s*"?tweet_id"?\s*,\s*"?created_at"?\s*,\s*"?text"?\s*,\s*"?original_url"?/i;
 const REQUIRED_TWEET_FIELDS = ['username', 'tweet_id', 'created_at', 'text', 'original_url'];
+const OPTIONAL_TWEET_METRIC_FIELDS = ['view_count', 'like_count', 'reply_count', 'repost_count'];
+const TWEET_CSV_FIELDS = [...REQUIRED_TWEET_FIELDS, ...OPTIONAL_TWEET_METRIC_FIELDS];
 const X_HANDLE_RE = /^[A-Za-z0-9_]{1,15}$/;
 const X_TWEET_URL_RE = /^https?:\/\/(?:www\.)?x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+$/i;
 const TWEET_ROW_START_RE = /^\s*"?(?<username>[A-Za-z0-9_]{1,15})"?\s*,\s*"?(?<tweetId>\d+)"?\s*,\s*"?(?<createdAt>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"?\s*,/;
@@ -245,8 +247,21 @@ function normalizeHandle(value, fallbackUrl = '') {
 function normalizeNumber(value) {
   if (value == null || value === '') return null;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const normalized = Number(String(value).replace(/,/g, '').trim());
-  return Number.isFinite(normalized) ? normalized : null;
+  const text = String(value).replace(/,/g, '').trim();
+  if (!text || /^(-|n\/a|unknown|null)$/i.test(text)) return null;
+  const compactMatch = text.match(/^([+-]?\d+(?:\.\d+)?)\s*([kmb]|万|亿)?\+?(?:\s*(?:views?|likes?|reposts?|retweets?|comments?|replies|reply|观看|点赞|转发|评论|回复))?$/i);
+  if (!compactMatch) return null;
+  const base = Number(compactMatch[1]);
+  if (!Number.isFinite(base)) return null;
+  const suffix = String(compactMatch[2] ?? '').toLowerCase();
+  const multiplier = {
+    k: 1_000,
+    m: 1_000_000,
+    b: 1_000_000_000,
+    '万': 10_000,
+    '亿': 100_000_000,
+  }[suffix] ?? 1;
+  return Math.max(0, Math.round(base * multiplier));
 }
 
 function normalizeBoolean(value) {
@@ -272,6 +287,10 @@ function pickNumber(...values) {
     if (normalized !== null) return normalized;
   }
   return null;
+}
+
+function pickTweetMetric(record, ...keys) {
+  return pickNumber(...keys.map((key) => record?.[key]));
 }
 
 function pickBoolean(...values) {
@@ -324,7 +343,7 @@ function escapeCsvValue(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function serializeCsv(records, headers = REQUIRED_TWEET_FIELDS) {
+function serializeCsv(records, headers = TWEET_CSV_FIELDS) {
   const headerLine = headers.join(',');
   const rowLines = records.map((record) => headers.map((header) => escapeCsvValue(record[header] ?? '')).join(','));
   return [headerLine, ...rowLines].join('\n');
@@ -382,6 +401,12 @@ function inspectTweetRecord(record) {
   const createdAtMs = parseTimestampMs(createdAt);
   const text = pickString(record.text, record.full_text, record.content);
   const originalUrl = normalizeTweetUrl(record.original_url ?? record.originalUrl ?? record.url, username, tweetId);
+  const metrics = {
+    viewCount: pickTweetMetric(record, 'view_count', 'viewCount', 'views', 'view', 'impression_count', 'impressionCount', 'impressions'),
+    likeCount: pickTweetMetric(record, 'like_count', 'likeCount', 'likes', 'favorite_count', 'favoriteCount', 'favorites'),
+    replyCount: pickTweetMetric(record, 'reply_count', 'replyCount', 'replies', 'comment_count', 'commentCount', 'comments'),
+    repostCount: pickTweetMetric(record, 'repost_count', 'repostCount', 'reposts', 'retweet_count', 'retweetCount', 'retweets'),
+  };
 
   const fieldIssues = [];
   if (!username) fieldIssues.push('username');
@@ -401,6 +426,7 @@ function inspectTweetRecord(record) {
     createdAtMs,
     text,
     originalUrl,
+    metrics,
     fieldIssues,
     hasTweetIdentityShape:
       hasValidTweetId(tweetId)
@@ -610,6 +636,7 @@ export function normalizeTweetRecords(seeds, records, batchId, options = {}) {
       createdAtMs,
       text,
       originalUrl,
+      metrics,
       fieldIssues,
       hasTweetIdentityShape,
     } = inspected;
@@ -657,6 +684,10 @@ export function normalizeTweetRecords(seeds, records, batchId, options = {}) {
       createdAt,
       text,
       originalUrl,
+      viewCount: metrics.viewCount,
+      likeCount: metrics.likeCount,
+      replyCount: metrics.replyCount,
+      repostCount: metrics.repostCount,
       batchId,
       source: {
         seedId: seed.seedId,
@@ -665,6 +696,9 @@ export function normalizeTweetRecords(seeds, records, batchId, options = {}) {
         seedHandle: seed.handle,
         displayName: seed.displayName,
         userPageUrl: seed.userPageUrl,
+        followersCount: seed.followersCount,
+        verified: seed.verified,
+        isBlueVerified: seed.isBlueVerified,
       },
       sourceType: 'tweet',
     });
@@ -1193,6 +1227,10 @@ function buildCsvRecordFromItem(item) {
     created_at: item.createdAt,
     text: item.text,
     original_url: item.originalUrl,
+    view_count: item.viewCount,
+    like_count: item.likeCount,
+    reply_count: item.replyCount,
+    repost_count: item.repostCount,
   };
 }
 

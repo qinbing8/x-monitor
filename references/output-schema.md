@@ -50,7 +50,7 @@ Raw Grok output captured per batch.
       "seedIds": ["seed-1", "seed-2"],
       "parseError": null,
       "rowCount": 18,
-      "rawText": "username,tweet_id,created_at,text,original_url\n..."
+      "rawText": "username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count\n..."
     }
   ]
 }
@@ -61,9 +61,9 @@ Raw Grok output captured per batch.
 Combined raw tweet CSV extracted from all parseable Grok batches.
 
 ```csv
-username,tweet_id,created_at,text,original_url
-alice,190001,2026-03-23T01:02:03Z,"Shipped a new CLI for tracing agent runs.",https://x.com/alice/status/190001
-alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven development.",https://x.com/alice/status/190002
+username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count
+alice,190001,2026-03-23T01:02:03Z,"Shipped a new CLI for tracing agent runs.",https://x.com/alice/status/190001,12000,340,18,42
+alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven development.",https://x.com/alice/status/190002,,,,
 ```
 
 ## fetch.result.json
@@ -123,13 +123,20 @@ alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven develop
       "createdAt": "2026-03-23T01:02:03Z",
       "text": "Shipped a new CLI for tracing agent runs.",
       "originalUrl": "https://x.com/alice/status/190001",
+      "viewCount": 12000,
+      "likeCount": 340,
+      "replyCount": 18,
+      "repostCount": 42,
       "batchId": "batch-1",
       "source": {
         "seedId": "seed-1",
         "csvRowNumber": 2,
         "seedHandle": "alice",
         "displayName": "Alice Maker",
-        "userPageUrl": "https://x.com/alice"
+        "userPageUrl": "https://x.com/alice",
+        "followersCount": 25000,
+        "verified": true,
+        "isBlueVerified": false
       },
       "sourceType": "tweet"
     }
@@ -152,7 +159,48 @@ alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven develop
   "task": {
     "goal": "Screen the last 24 hours of X tweets into an editorial daily brief",
     "analysisProfile": "gpt-default",
-    "reportDate": "2026-03-23"
+    "reportDate": "2026-03-23",
+    "rankingSummary": {
+      "scoredTweetCount": 18,
+      "selectedTweetCount": 10,
+      "metricCoverage": {
+        "viewCount": 12,
+        "likeCount": 12,
+        "replyCount": 10,
+        "repostCount": 10
+      },
+      "selectedScoreMin": 201.42,
+      "selectedScoreMax": 487.88
+    },
+    "promptItems": [
+      {
+        "tweetId": "190001",
+        "username": "alice",
+        "text": "Shipped a new CLI for tracing agent runs.",
+        "viewCount": 12000,
+        "likeCount": 340,
+        "replyCount": 18,
+        "repostCount": 42,
+        "ranking": {
+          "contentScore": 240,
+          "engagementScore": 87.21,
+          "accountScore": 43.19,
+          "penaltyScore": 0,
+          "totalScore": 370.4,
+          "metrics": {
+            "viewCount": 12000,
+            "likeCount": 340,
+            "replyCount": 18,
+            "repostCount": 42
+          },
+          "account": {
+            "followersCount": 25000,
+            "verified": true,
+            "isBlueVerified": false
+          }
+        }
+      }
+    ]
   },
   "evidence": {
     "meta": {
@@ -207,6 +255,18 @@ alice,190002,2026-03-23T05:00:00Z,"Quote: Strong write-up on eval-driven develop
       }
     ],
     "tweetCount": 18,
+    "rankingSummary": {
+      "scoredTweetCount": 18,
+      "selectedTweetCount": 10,
+      "metricCoverage": {
+        "viewCount": 12,
+        "likeCount": 12,
+        "replyCount": 10,
+        "repostCount": 10
+      },
+      "selectedScoreMin": 201.42,
+      "selectedScoreMax": 487.88
+    },
     "coverage": {
       "totalAccountCount": 24,
       "coveredAccountCount": 10,

@@ -25,7 +25,7 @@
 不要输出代码围栏，不要输出 ```csv。
 
 CSV 首行必须是以下表头，字段顺序不要变：
-username,tweet_id,created_at,text,original_url
+username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count
 
 字段含义：
 - `username`：发帖用户名
@@ -33,6 +33,10 @@ username,tweet_id,created_at,text,original_url
 - `created_at`：发布时间，UTC ISO 8601 格式（必须带 Z 后缀）
 - `text`：推文完整内容，转发与引用内容也要保留
 - `original_url`：推文链接
+- `view_count`：观看数量；无法获取时留空
+- `like_count`：点赞数量；无法获取时留空
+- `reply_count`：评论/回复数量；无法获取时留空
+- `repost_count`：转发/引用数量；无法获取时留空
 
 ## 重要边界
 - 你的职责只是抓取和整理原始推文内容
@@ -43,15 +47,16 @@ username,tweet_id,created_at,text,original_url
 - 不要生成测试数据、占位文本或示例推文
 - 如果所有账号均无推文，只输出表头行即可
 - 每条推文必须严格输出为 CSV 中的一行，不能把同一条推文拆成多行
-- 五个字段都必须用双引号包裹
+- 九个字段都必须用双引号包裹
 - `text` 字段如果包含英文双引号，必须转义为两个双引号 `""`
 - `text` 字段如果原始推文有换行，不要输出真实换行；请改写成字面量 `\n`
+- 互动数字只记录页面可见或检索结果明确给出的值；无法确认时输出空字符串，不要估算
 
 ## 最终检查（输出前必读）
 在你生成最终 CSV 之前，请执行以下检查：
 1. 逐行确认每条推文的 `created_at` 是否在 {{WINDOW_START_UTC}} 至 {{WINDOW_END_UTC}} 之间
 2. 删除所有不在此区间的行
-3. 确认每行都包含 `username`, `tweet_id`, `created_at`, `text`, `original_url` 五个字段，任何字段都不得为空
+3. 确认每行都包含 9 个字段，其中 `username`, `tweet_id`, `created_at`, `text`, `original_url` 不得为空，互动数字无法获取时可为空
 4. 确认每条推文在 CSV 中只占一行，不存在因为 `text` 换行导致的拆行
 5. 确认每个字段都被双引号包裹
 

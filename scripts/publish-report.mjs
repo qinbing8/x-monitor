@@ -23,10 +23,56 @@ function slugifyHeading(text) {
     .replace(/^-|-$/g, '');
 }
 
-function renderInlineMarkdown(text) {
+function isTweetSourceUrl(value) {
+  try {
+    const url = new URL(String(value ?? '').trim());
+    const hostname = url.hostname.toLowerCase();
+    const isXHost = ['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com'].includes(hostname);
+    return isXHost && /\/status(?:es)?\/[^/]+/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function trimUrlTrailingPunctuation(value) {
+  return String(value ?? '').replace(/[),.;:!?，。；：！？、]+$/u, '');
+}
+
+function findTweetSourceLink(markdown) {
+  const text = String(markdown ?? '');
+  const markdownLinkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let match;
+  while ((match = markdownLinkPattern.exec(text))) {
+    const href = trimUrlTrailingPunctuation(match[2]);
+    if (isTweetSourceUrl(href)) {
+      return {
+        href,
+        start: match.index,
+        end: match.index + match[0].length,
+      };
+    }
+  }
+
+  const bareUrlPattern = /https?:\/\/[^\s<]+/g;
+  while ((match = bareUrlPattern.exec(text))) {
+    const href = trimUrlTrailingPunctuation(match[0]);
+    if (isTweetSourceUrl(href)) {
+      return {
+        href,
+        start: match.index,
+        end: match.index + href.length,
+      };
+    }
+  }
+
+  return null;
+}
+
+function renderInlineMarkdown(text, options = {}) {
   const codeTokens = [];
   const linkTokens = [];
   const strongTokens = [];
+  const tweetSourceLinkMode = options.tweetSourceLinkMode ?? 'full';
   let rendered = String(text ?? '')
     .replace(/`([^`]+)`/g, (_, code) => {
       const token = `@@CODE${codeTokens.length}@@`;
@@ -35,7 +81,13 @@ function renderInlineMarkdown(text) {
     })
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, href) => {
       const token = `@@LINK${linkTokens.length}@@`;
-      linkTokens.push(`<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`);
+      if (isTweetSourceUrl(href) && tweetSourceLinkMode === 'compact') {
+        linkTokens.push(renderTweetSourceLink(href));
+      } else if (isTweetSourceUrl(href) && tweetSourceLinkMode === 'suppress') {
+        linkTokens.push('');
+      } else {
+        linkTokens.push(`<a href="${escapeHtml(href)}">${escapeHtml(label)}</a>`);
+      }
       return token;
     });
 
@@ -47,7 +99,15 @@ function renderInlineMarkdown(text) {
 
   rendered = escapeHtml(rendered).replace(
     /(https?:\/\/[^\s<]+)/g,
-    (match) => `<a href="${match}">${match}</a>`,
+    (match) => {
+      const href = trimUrlTrailingPunctuation(match);
+      const suffix = match.slice(href.length);
+      if (isTweetSourceUrl(href) && tweetSourceLinkMode === 'compact') {
+        return `${renderTweetSourceLink(href)}${escapeHtml(suffix)}`;
+      }
+      if (isTweetSourceUrl(href) && tweetSourceLinkMode === 'suppress') return escapeHtml(suffix);
+      return `<a href="${match}">${match}</a>`;
+    },
   );
 
   rendered = rendered
@@ -58,9 +118,34 @@ function renderInlineMarkdown(text) {
   return rendered;
 }
 
-function flushParagraph(paragraphLines, output) {
+function cleanupSourceLinkText(text) {
+  return String(text ?? '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s+([,，。；;:：])/g, '$1')
+    .replace(/[（(]\s*[）)]/g, '')
+    .replace(/(?:原文链接|原文|链接)\s*[:：]?\s*$/u, '')
+    .replace(/[ \t]*(?:[|｜/]|-|—|、|,|，|;|；|:|：)+\s*$/u, '')
+    .trim();
+}
+
+function renderTweetSourceLink(href) {
+  return `<a href="${escapeHtml(href)}" class="source-link">查看原文</a>`;
+}
+
+function renderHighValueTweetMarkdown(text) {
+  const sourceLink = findTweetSourceLink(text);
+  if (!sourceLink) return renderInlineMarkdown(text);
+
+  const displayText = cleanupSourceLinkText(`${String(text ?? '').slice(0, sourceLink.start)}${String(text ?? '').slice(sourceLink.end)}`);
+  const renderedText = displayText ? renderInlineMarkdown(displayText, { tweetSourceLinkMode: 'compact' }) : '';
+  const renderedLink = renderTweetSourceLink(sourceLink.href);
+  return renderedText ? `${renderedText} ${renderedLink}` : renderedLink;
+}
+
+function flushParagraph(paragraphLines, output, renderOptions = {}) {
   if (paragraphLines.length === 0) return;
-  output.push(`<p>${renderInlineMarkdown(paragraphLines.join(' '))}</p>`);
+  const rendered = renderInlineMarkdown(paragraphLines.join(' '), renderOptions).trim();
+  if (rendered) output.push(`<p>${rendered}</p>`);
   paragraphLines.length = 0;
 }
 
@@ -94,10 +179,17 @@ function renderReportStyles() {
     'pre code { padding: 0; border: 0; background: transparent; color: inherit; }',
     'a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 0.16em; overflow-wrap: anywhere; }',
     'a:hover { text-decoration-thickness: 2px; }',
+    '.source-link { white-space: nowrap; font-weight: 600; }',
     '@page { size: A4; margin: 20mm 22mm 22mm; }',
     '@media (max-width: 720px) { .report-shell { padding: 28px 18px 48px; } .report-document { min-height: 100vh; } h1 { font-size: 1.65rem; } h2 { margin-top: 1.9rem; font-size: 1.14rem; } p, li { font-size: 0.98rem; } }',
     '@media print { html, body { background: #fff; } .report-shell { width: auto; margin: 0; padding: 0; } .report-document { max-width: none; min-height: 0; padding: 0; } h1 { margin-bottom: 1.6rem; } h2 { break-after: avoid; } p, li { orphans: 2; widows: 2; } a { color: inherit; } }',
   ];
+}
+
+function renderOptionsForSection(inHighValueTweetSection) {
+  return {
+    tweetSourceLinkMode: inHighValueTweetSection ? 'compact' : 'suppress',
+  };
 }
 
 export function renderMarkdownDocument(markdown, options = {}) {
@@ -105,6 +197,7 @@ export function renderMarkdownDocument(markdown, options = {}) {
   const body = [];
   const paragraphLines = [];
   const listState = { inList: false };
+  let inHighValueTweetSection = false;
   let inCodeBlock = false;
   let codeLines = [];
 
@@ -116,7 +209,7 @@ export function renderMarkdownDocument(markdown, options = {}) {
 
   for (const line of lines) {
     if (line.startsWith('```')) {
-      flushParagraph(paragraphLines, body);
+      flushParagraph(paragraphLines, body, renderOptionsForSection(inHighValueTweetSection));
       closeListIfNeeded(listState, body);
       if (inCodeBlock) {
         flushCodeBlock();
@@ -134,17 +227,20 @@ export function renderMarkdownDocument(markdown, options = {}) {
 
     const trimmed = line.trim();
     if (!trimmed) {
-      flushParagraph(paragraphLines, body);
+      flushParagraph(paragraphLines, body, renderOptionsForSection(inHighValueTweetSection));
       closeListIfNeeded(listState, body);
       continue;
     }
 
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (headingMatch) {
-      flushParagraph(paragraphLines, body);
+      flushParagraph(paragraphLines, body, renderOptionsForSection(inHighValueTweetSection));
       closeListIfNeeded(listState, body);
       const level = headingMatch[1].length;
       const text = headingMatch[2].trim();
+      if (level <= 2) {
+        inHighValueTweetSection = text.includes('高价值推文');
+      }
       body.push(`<h${level} id="${slugifyHeading(text)}">${renderInlineMarkdown(text)}</h${level}>`);
       continue;
     }
@@ -156,7 +252,11 @@ export function renderMarkdownDocument(markdown, options = {}) {
         body.push('<ul>');
         listState.inList = true;
       }
-      body.push(`<li>${renderInlineMarkdown(listMatch[1].trim())}</li>`);
+      const itemText = listMatch[1].trim();
+      const renderedItem = inHighValueTweetSection
+        ? renderHighValueTweetMarkdown(itemText)
+        : renderInlineMarkdown(itemText, renderOptionsForSection(false)).trim();
+      if (renderedItem) body.push(`<li>${renderedItem}</li>`);
       continue;
     }
 
@@ -165,7 +265,7 @@ export function renderMarkdownDocument(markdown, options = {}) {
   }
 
   if (inCodeBlock) flushCodeBlock();
-  flushParagraph(paragraphLines, body);
+  flushParagraph(paragraphLines, body, renderOptionsForSection(inHighValueTweetSection));
   closeListIfNeeded(listState, body);
 
   const title = options.title ? String(options.title) : 'x-monitor report';
