@@ -13,8 +13,8 @@ const OPTIONAL_TWEET_METRIC_FIELDS = ['view_count', 'like_count', 'reply_count',
 const TWEET_CSV_FIELDS = [...REQUIRED_TWEET_FIELDS, ...OPTIONAL_TWEET_METRIC_FIELDS];
 const X_HANDLE_RE = /^[A-Za-z0-9_]{1,15}$/;
 const X_TWEET_URL_RE = /^https?:\/\/(?:www\.)?x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+$/i;
+const X_TWEET_URL_IN_TEXT_RE = /https?:\/\/(?:www\.)?x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+/gi;
 const TWEET_ROW_START_RE = /^\s*"?(?<username>[A-Za-z0-9_]{1,15})"?\s*,\s*"?(?<tweetId>\d+)"?\s*,\s*"?(?<createdAt>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"?\s*,/;
-const TWEET_URL_FIELD_AT_END_RE = /,\s*"?(https?:\/\/(?:www\.)?x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d+)"?\s*$/i;
 const MS_PER_HOUR = 60 * 60 * 1000;
 const NO_TWEET_NOTE = 'No qualifying tweets were returned for the last 24 hours.';
 const OUTSIDE_TIME_WINDOW_REASON = 'Tweet is outside the configured time window';
@@ -178,12 +178,63 @@ function splitRecoveredTweetRowBlocks(csvText, options = {}) {
       continue;
     }
     if (!currentBlock) continue;
-    if (TWEET_URL_FIELD_AT_END_RE.test(currentBlock)) continue;
+    if (findRecoveredTweetUrlSuffix(currentBlock)) continue;
     currentBlock += `\n${line}`;
   }
 
   if (currentBlock) rowBlocks.push(currentBlock);
   return rowBlocks;
+}
+
+function parseRecoveredMetricFields(input, expectedFieldCount) {
+  const text = String(input ?? '');
+  const fields = [];
+  let index = 0;
+
+  while (fields.length < expectedFieldCount && index <= text.length) {
+    const field = consumeCsvField(text, index);
+    fields.push(unquoteCsvField(field.value).trim());
+    if (field.nextIndex === index) break;
+    index = field.nextIndex;
+    if (index >= text.length && !text.endsWith(',')) break;
+  }
+
+  if (text.slice(index).trim()) return null;
+  while (fields.length < expectedFieldCount) fields.push('');
+  return fields;
+}
+
+function parseRecoveredMetricSuffix(afterUrl) {
+  let suffix = String(afterUrl ?? '').trim();
+  if (suffix.startsWith('"')) suffix = suffix.slice(1).trimStart();
+  if (!suffix) return { valid: true, metrics: {} };
+  if (!suffix.startsWith(',')) return { valid: false, metrics: {} };
+
+  const fields = parseRecoveredMetricFields(suffix.slice(1), OPTIONAL_TWEET_METRIC_FIELDS.length);
+  if (!fields) return { valid: false, metrics: {} };
+  return {
+    valid: true,
+    metrics: Object.fromEntries(OPTIONAL_TWEET_METRIC_FIELDS.map((field, index) => [field, fields[index] ?? ''])),
+  };
+}
+
+function findRecoveredTweetUrlSuffix(value) {
+  const text = String(value ?? '');
+  const matches = [...text.matchAll(X_TWEET_URL_IN_TEXT_RE)];
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const match = matches[index];
+    const href = match[0];
+    const beforeUrl = text.slice(0, match.index);
+    if (!/,\s*"?\s*$/.test(beforeUrl)) continue;
+    const suffix = parseRecoveredMetricSuffix(text.slice((match.index ?? 0) + href.length));
+    if (!suffix.valid) continue;
+    return {
+      href,
+      textPart: beforeUrl.replace(/,\s*"?\s*$/, ''),
+      metrics: suffix.metrics,
+    };
+  }
+  return null;
 }
 
 function parseRecoveredTweetRow(rowBlock) {
@@ -193,9 +244,9 @@ function parseRecoveredTweetRow(rowBlock) {
   const tweetIdField = consumeCsvField(rowBlock, usernameField.nextIndex);
   const createdAtField = consumeCsvField(rowBlock, tweetIdField.nextIndex);
   const remainder = rowBlock.slice(createdAtField.nextIndex);
-  const urlMatch = remainder.match(TWEET_URL_FIELD_AT_END_RE);
-  const textPart = urlMatch ? remainder.slice(0, urlMatch.index) : remainder;
-  const originalUrl = urlMatch?.[1] ?? '';
+  const urlSuffix = findRecoveredTweetUrlSuffix(remainder);
+  const textPart = urlSuffix ? urlSuffix.textPart : remainder;
+  const originalUrl = urlSuffix?.href ?? '';
   const text = unquoteCsvField(textPart).replace(/\\n/g, '\n').trim();
 
   return {
@@ -204,6 +255,7 @@ function parseRecoveredTweetRow(rowBlock) {
     created_at: createdAtField.value,
     text,
     original_url: originalUrl,
+    ...(urlSuffix?.metrics ?? {}),
   };
 }
 

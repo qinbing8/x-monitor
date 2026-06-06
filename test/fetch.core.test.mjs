@@ -60,3 +60,35 @@ test('parseTweetCsvResponse accepts optional engagement metric columns', () => {
   assert.equal(response.records[0].reply_count, '18');
   assert.equal(response.records[0].repost_count, '42');
 });
+
+test('parseTweetCsvResponse recovers headerless rows with optional engagement metrics', () => {
+  const response = parseTweetCsvResponse(
+    'alice,190100,2026-03-23T06:00:00Z,Benchmark notes with a repo link,https://x.com/alice/status/190100,"12.3K","1,200","18 reply","42"',
+  );
+
+  assert.equal(response.records.length, 1);
+  assert.equal(response.parserDiagnostics.strategy, 'headerless_rows');
+  assert.equal(response.records[0].text, 'Benchmark notes with a repo link');
+  assert.equal(response.records[0].original_url, 'https://x.com/alice/status/190100');
+  assert.equal(response.records[0].view_count, '12.3K');
+  assert.equal(response.records[0].like_count, '1,200');
+  assert.equal(response.records[0].reply_count, '18 reply');
+  assert.equal(response.records[0].repost_count, '42');
+});
+
+test('parseTweetCsvResponse recovers malformed multiline rows with optional engagement metrics', () => {
+  const response = parseTweetCsvResponse([
+    'username,tweet_id,created_at,text,original_url,view_count,like_count,reply_count,repost_count',
+    'alice,190101,2026-03-23T06:00:00Z,First line with comma,',
+    'second line,https://x.com/alice/status/190101,12000,340,18,42',
+  ].join('\n'));
+
+  assert.equal(response.records.length, 1);
+  assert.equal(response.parserDiagnostics.strategy, 'recovered_rows');
+  assert.equal(response.records[0].text, 'First line with comma,\nsecond line');
+  assert.equal(response.records[0].original_url, 'https://x.com/alice/status/190101');
+  assert.equal(response.records[0].view_count, '12000');
+  assert.equal(response.records[0].like_count, '340');
+  assert.equal(response.records[0].reply_count, '18');
+  assert.equal(response.records[0].repost_count, '42');
+});

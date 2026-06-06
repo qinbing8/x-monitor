@@ -39,6 +39,25 @@ test('renderMarkdownDocument converts bold inline markdown', () => {
   assert.doesNotMatch(html, /\*\*Gemma 4\*\*/);
 });
 
+test('renderMarkdownDocument keeps tweet link policy when paragraphs flush before lists', () => {
+  const html = renderMarkdownDocument([
+    '# X 日报',
+    '',
+    '## 今日摘要',
+    '摘要段落 https://x.com/alice/status/190101',
+    '- 下一条',
+    '',
+    '## 高价值推文',
+    '高价值段落 https://x.com/bob/status/190102',
+    '- @bob 列表 https://x.com/bob/status/190103',
+  ].join('\n'));
+
+  assert.doesNotMatch(html, /https:\/\/x\.com\/alice\/status\/190101/);
+  assert.match(html, /<p>高价值段落 <a href="https:\/\/x\.com\/bob\/status\/190102" class="source-link">查看原文<\/a><\/p>/);
+  assert.match(html, /<li>@bob 列表 <a href="https:\/\/x\.com\/bob\/status\/190103" class="source-link">查看原文<\/a><\/li>/);
+  assert.doesNotMatch(html, /<a href="https:\/\/x\.com\/bob\/status\/190102">https:\/\/x\.com\/bob\/status\/190102<\/a>/);
+});
+
 test('mergeIndexEntries keeps newest entry first and deduplicates by date and runId', () => {
   const older = {
     date: '2026-03-23',

@@ -247,7 +247,7 @@ export function renderMarkdownDocument(markdown, options = {}) {
 
     const listMatch = line.match(/^\s*-\s+(.+)$/);
     if (listMatch) {
-      flushParagraph(paragraphLines, body);
+      flushParagraph(paragraphLines, body, renderOptionsForSection(inHighValueTweetSection));
       if (!listState.inList) {
         body.push('<ul>');
         listState.inList = true;
