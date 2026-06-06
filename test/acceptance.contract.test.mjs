@@ -25,6 +25,9 @@ test('acceptance contract keeps Grok and GPT responsibilities separated', async 
   assert.match(analyzePrompt, /0-3 星价值判断/);
   assert.match(analyzePrompt, /闲聊/);
   assert.match(analyzePrompt, /内容价值始终优先/);
+  assert.match(analyzePrompt, /待验证推文/);
+  assert.match(analyzePrompt, /候选高价值推文/);
+  assert.doesNotMatch(analyzePrompt, /待处理证据/);
 
   assert.match(rosterPrompt, /低价值闲聊/);
   assert.match(rosterPrompt, /high_value_tweet_count/);
