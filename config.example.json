@@ -33,8 +33,8 @@
         "seedCsvPath": "./X列表关注者.daily.csv",
         "promptFile": "assets/prompts/grok-fetch.txt",
         "precheck": {
-          "enabled": true,
-          "staticFilterZeroPosts": true,
+          "enabled": false,
+          "staticFilterZeroPosts": false,
           "dormantThresholdDays": 7,
           "batchSize": 10,
           "timeoutMs": 30000,

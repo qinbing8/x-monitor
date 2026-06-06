@@ -181,10 +181,12 @@ node scripts/run.mjs --mode fetch --seed-csv .\X列表关注者.daily.csv
 node scripts/run.mjs --mode fetch --batch-size 8
 ```
 
-### 跳过 precheck
+### 启用 precheck
 
 ```powershell
-node scripts/run.mjs --mode fetch --skip-precheck
+# 默认不启用 precheck；如需省调用量，可在 config.json 中将
+# fetch.profiles.grok-default.precheck.enabled 改为 true。
+node scripts/run.mjs --mode fetch
 ```
 
 ### 切换分析模型
@@ -208,7 +210,7 @@ node scripts/run.mjs --mode analyze --analysis-profile claude-default
 - `fetch.profiles.grok-default.batchSize`
   每个 Grok 请求包含的账号数
 - `fetch.profiles.grok-default.precheck`
-  抓取前静态过滤与预检查
+  抓取前休眠预检查；默认关闭，以优先保证 X 信息流覆盖面
 - `analysis.activeProfile`
   默认分析配置，当前是 `gpt-default`
 - `analysis.profiles.gpt-default.maxOutputTokens`
