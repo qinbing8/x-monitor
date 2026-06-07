@@ -1679,7 +1679,7 @@ function buildDiagnosticFallbackDailyBrief({ runDate }) {
     '',
     '> 终稿模型未产出可用正文，当前没有可展示的高价值推文条目。',
     '',
-    '## 今日摘要',
+    '## 今日亮点',
     '- 暂未发现可进入日报正文的高价值推文。',
     '',
     '## 高价值推文',
@@ -1715,7 +1715,7 @@ function buildStructuredFallbackDailyBrief({
   const promotionalItemsDropped = preferredDigestItems.length > 0 && preferredDigestItems.length < rankedDigestItems.length;
 
   const summaryLines = ((safeChunkSummaries.length > 0 && !promotionalItemsDropped) ? safeChunkSummaries : displayDigestItems.slice(0, 4).map((item) => ({
-    headline: `@${item.username}`,
+    headline: compactReadableText(item.text, 60) || '重点更新',
     summary: compactReadableText(item.text, 100),
   })))
     .slice(0, 4)
@@ -1726,17 +1726,20 @@ function buildStructuredFallbackDailyBrief({
     });
 
   const editorLines = displayDigestItems.slice(0, 5).map((item) => {
-    const handle = String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, '') || 'unknown';
     const text = compactReadableText(item?.text ?? '', 90);
     const url = String(item?.originalUrl ?? '').trim();
-    return [text ? `- @${handle}：${text}` : `- @${handle}`, url ? `  - ${url}` : null].filter(Boolean).join('\n');
+    return [text ? `- ${text}` : '', url ? `  - ${url}` : null].filter(Boolean).join('\n');
   });
 
   const digestLines = displayDigestItems.slice(0, 8).map((item) => {
-    const handle = String(item?.username ?? item?.handle ?? '').trim().replace(/^@/, '') || 'unknown';
     const text = compactReadableText(item?.text ?? '', 110);
     const url = String(item?.originalUrl ?? '').trim();
-    return `- @${handle}：${text}${url ? ` ${url}` : ''}`.trim();
+    const metrics = [
+      item.viewCount ? `浏览 ${item.viewCount}` : null,
+      item.likeCount ? `点赞 ${item.likeCount}` : null,
+      item.replyCount ? `回复 ${item.replyCount}` : null,
+    ].filter(Boolean).join(' · ');
+    return `- ${text}${url ? ` ${url}` : ''}${metrics ? ` | ${metrics}` : ''}`.trim();
   });
 
   return [
@@ -1744,7 +1747,7 @@ function buildStructuredFallbackDailyBrief({
     '',
     failureSummary ?? '> 终稿模型未产出可用正文，以下内容基于已完成的抓取、筛选与摘要结果自动整理。',
     '',
-    '## 今日要点摘要',
+    '## 今日亮点',
     ...summaryLines,
     '',
     '## 编辑精选',
