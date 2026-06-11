@@ -14,14 +14,25 @@ import {
 } from '../support/fixtures.mjs';
 
 test('renderMarkdownDocument converts report markdown into readable HTML', () => {
-  const html = renderMarkdownDocument(FIXTURE_ANALYZE_MARKDOWN, {
+  const markdown = [
+    '# X 日报 | 2026-03-23',
+    '',
+    '## 今日亮点',
+    '- Alice 发布新的 agent tracing CLI。',
+    '',
+    '## 高价值推文',
+    '- Alice 发布新的 agent tracing CLI https://x.com/alice/status/190001 | 浏览 12000 · 点赞 340 · 回复 18',
+    '- Bob 发布 benchmark notes https://x.com/bob/status/190002 | 浏览 48000 · 点赞 820 · 回复 64',
+  ].join('\n');
+  const html = renderMarkdownDocument(markdown, {
     title: '日报页面',
   });
 
   assert.match(html, /<title>日报页面<\/title>/);
   assert.match(html, /<h1 id="x-日报-2026-03-23">X 日报 \| 2026-03-23<\/h1>/);
-  assert.match(html, /<h2 id="今日要点摘要deep-brief">今日要点摘要（Deep Brief）<\/h2>/);
-  assert.match(html, /<code>@alice<\/code>/);
+  assert.match(html, /<h2 id="今日亮点">今日亮点<\/h2>/);
+  assert.doesNotMatch(html, /今日要点摘要/);
+  assert.doesNotMatch(html, /<code>@alice<\/code>/);
   assert.match(html, /<a href="https:\/\/x\.com\/alice\/status\/190001" class="source-link">查看原文<\/a>/);
   assert.doesNotMatch(html, /<a href="https:\/\/x\.com\/alice\/status\/190001">https:\/\/x\.com\/alice\/status\/190001<\/a>/);
   assert.equal((html.match(/class="source-link">查看原文/g) ?? []).length, 2);
@@ -43,18 +54,15 @@ test('renderMarkdownDocument keeps tweet link policy when paragraphs flush befor
   const html = renderMarkdownDocument([
     '# X 日报',
     '',
-    '## 今日摘要',
-    '摘要段落 https://x.com/alice/status/190101',
-    '- 下一条',
+    '## 今日亮点',
+    '- 摘要段落 https://x.com/alice/status/190101',
     '',
     '## 高价值推文',
-    '高价值段落 https://x.com/bob/status/190102',
-    '- @bob 列表 https://x.com/bob/status/190103',
+    '- 高价值段落 https://x.com/bob/status/190102 | 浏览 100 · 点赞 2 · 回复 1',
   ].join('\n'));
 
   assert.doesNotMatch(html, /https:\/\/x\.com\/alice\/status\/190101/);
-  assert.match(html, /<p>高价值段落 <a href="https:\/\/x\.com\/bob\/status\/190102" class="source-link">查看原文<\/a><\/p>/);
-  assert.match(html, /<li>@bob 列表 <a href="https:\/\/x\.com\/bob\/status\/190103" class="source-link">查看原文<\/a><\/li>/);
+  assert.match(html, /<a href="https:\/\/x\.com\/bob\/status\/190102" class="source-link">查看原文<\/a>/);
   assert.doesNotMatch(html, /<a href="https:\/\/x\.com\/bob\/status\/190102">https:\/\/x\.com\/bob\/status\/190102<\/a>/);
 });
 
@@ -78,6 +86,52 @@ test('mergeIndexEntries keeps newest entry first and deduplicates by date and ru
 
   assert.equal(merged.length, 1);
   assert.equal(merged[0].summary, '新摘要');
+});
+
+test('publishRunArtifacts extracts index summary from 今日亮点', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'x-monitor-publish-summary-'));
+  const runDir = resolve(root, 'data', '2026-06-11', 'run-080000-abcdef12');
+  const outputDir = resolve(root, '.tmp', 'published');
+  const summaryPath = resolve(root, '.tmp', 'run-summary.json');
+  const previousIndexPath = resolve(root, '.tmp', 'previous-index.json');
+
+  await mkdir(runDir, { recursive: true });
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(resolve(runDir, 'final.md'), [
+    '# X 日报 | 2026-06-11',
+    '',
+    '> Low-coverage digest: partial evidence.',
+    '',
+    '## 今日亮点',
+    '- OpenAI 确认封号为系统 Bug，赔偿一个月订阅。',
+    '',
+    '## 高价值推文',
+    '- OpenAI 确认封号为系统 Bug https://x.com/openai/status/190001 | 浏览 931 · 点赞 13 · 回复 9',
+  ].join('\n'), 'utf8');
+  await writeFile(resolve(runDir, 'analyze.result.json'), JSON.stringify({
+    meta: { analyzedAt: '2026-06-11T08:10:00.000Z' },
+    quality: { needsReview: true, status: 'degraded', note: 'partial evidence' },
+  }, null, 2), 'utf8');
+  await writeFile(summaryPath, JSON.stringify({
+    mode: 'run',
+    analyze: {
+      runDir,
+      finalReportPath: resolve(runDir, 'final.md'),
+      analyzeResultPath: resolve(runDir, 'analyze.result.json'),
+    },
+  }, null, 2), 'utf8');
+  await writeFile(previousIndexPath, '[]', 'utf8');
+
+  await publishRunArtifacts({
+    summaryPath,
+    outputDir,
+    previousIndexPath,
+    siteOrigin: 'https://example.com',
+    publicBaseUrl: 'https://example.com/reports',
+  });
+
+  const indexJson = JSON.parse(await readFile(resolve(outputDir, 'reports', 'index.json'), 'utf8'));
+  assert.equal(indexJson[0].summary, 'OpenAI 确认封号为系统 Bug，赔偿一个月订阅。');
 });
 
 test('publishRunArtifacts writes publishable files and latest/index metadata', async () => {

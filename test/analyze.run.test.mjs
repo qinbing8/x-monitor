@@ -423,11 +423,16 @@ test('runAnalyze writes a readable structured fallback brief when the GPT brief 
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.answer.source, 'fallback');
     assert.equal(analyzeResult.meta.fetchDiagnosis.status, 'ready');
-    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /## 今日亮点/);
+    assert.doesNotMatch(analyzeResult.answer.markdown, /## 今日要点摘要/);
     assert.match(analyzeResult.answer.markdown, /高价值推文完整清单/);
     assert.match(analyzeResult.answer.markdown, /https:\/\/x\.com\/alice\/status\/190001/);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
+    assert.doesNotMatch(finalReport, /^-\s+@[\w_]{1,15}\b/m);
+    assert.doesNotMatch(finalReport, /\*\*@[\w_]{1,15}\*\*/);
+    assert.doesNotMatch(finalReport, /作者：@[\w_]{1,15}/);
+    assert.doesNotMatch(finalReport, /来源：@[\w_]{1,15}/);
     assert.match(finalReport, /编辑精选/);
   } finally {
     await fixture.cleanup();
@@ -504,7 +509,8 @@ test('runAnalyze falls back when the GPT brief is structurally weak despite bein
 
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.answer.source, 'fallback');
-    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /## 今日亮点/);
+    assert.doesNotMatch(analyzeResult.answer.markdown, /## 今日要点摘要/);
     assert.match(analyzeResult.answer.markdown, /编辑精选/);
     assert.match(analyzeResult.answer.markdown, /高价值推文完整清单/);
     assert.match(analyzeResult.answer.markdown, /Shipped a new CLI for tracing agent runs/);
@@ -613,7 +619,8 @@ test('runAnalyze preserves a final-draft diagnostic artifact and falls back to a
 
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.answer.source, 'fallback');
-    assert.match(analyzeResult.answer.markdown, /今日要点摘要/);
+    assert.match(analyzeResult.answer.markdown, /## 今日亮点/);
+    assert.doesNotMatch(analyzeResult.answer.markdown, /## 今日要点摘要/);
     assert.match(analyzeResult.answer.markdown, /https:\/\/x\.com\/alice\/status\/190001/);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
@@ -998,7 +1005,7 @@ test('runAnalyze keeps brief quality healthy when digest summary LLM chunks fall
 
     const finalPrompt = String(requests.at(-1)?.messages?.[0]?.content ?? requests.at(-1)?.input?.[0]?.content ?? '');
     assert.match(finalPrompt, /"summary_chunks":\s*\[/);
-    assert.match(finalPrompt, /重点更新/);
+    assert.match(finalPrompt, /"headline":\s*"account01 shipped an agent workflow update/);
   } finally {
     await fixture.cleanup();
   }

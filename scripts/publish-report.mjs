@@ -312,7 +312,7 @@ function extractSummary(markdown) {
   let inDeepBrief = false;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (/^##\s+今日要点摘要/.test(trimmed)) {
+    if (/^##\s+(?:今日亮点|今日摘要|今日要点摘要)(?:\s|（|\(|$)/.test(trimmed)) {
       inDeepBrief = true;
       continue;
     }
@@ -323,7 +323,10 @@ function extractSummary(markdown) {
   }
   const fallbackLine = lines
     .map((line) => line.trim())
-    .find((line) => line && !/^#+\s+/.test(line) && !/^-\s*$/.test(line));
+    .find((line) => line
+      && !/^#+\s+/.test(line)
+      && !/^>\s+/.test(line)
+      && !/^-\s*$/.test(line));
   return stripInlineMarkdown(fallbackLine ?? '').slice(0, 120);
 }
 

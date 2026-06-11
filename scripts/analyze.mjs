@@ -466,18 +466,13 @@ function buildLocalDigestSummaryEntries(items, chunkIndex) {
   const tweetIds = rankedItems
     .map((item) => String(item?.tweetId ?? '').trim())
     .filter(Boolean);
-  const topHandles = handles.slice(0, 2).map((handle) => `@${handle}`);
-  const headlineBase = topHandles.length === 0
-    ? `第 ${chunkIndex + 1} 组重点更新`
-    : topHandles.length === 1
-      ? `${topHandles[0]} 重点更新`
-      : handles.length > 2
-        ? `${topHandles.join(' / ')} 等重点更新`
-        : `${topHandles.join(' / ')} 重点更新`;
   const summaryParts = rankedItems
     .slice(0, 2)
     .map((item) => compactTweetText(String(item?.text ?? '').replace(/https?:\/\/\S+/gi, '').trim(), 72))
     .filter(Boolean);
+  const headlineBase = summaryParts[0]
+    ? compactTweetText(summaryParts[0], MAX_DIGEST_SUMMARY_HEADLINE_CHARS)
+    : `第 ${chunkIndex + 1} 组重点更新`;
   const summaryBase = summaryParts.length > 0
     ? summaryParts.join('；')
     : `本组包含 ${rankedItems.length} 条高价值推文线索。`;

@@ -40,12 +40,12 @@ On Sundays, append a `## 本周回顾` section to the daily report (`final.md`),
 
 The weekly extraction logic must recognize all known heading variants produced by the primary model path, the structured fallback path, and legacy reports:
 
-| Semantic Role | Primary Path Heading | Fallback Path Heading | Legacy/Schema Heading |
-|---------------|---------------------|-----------------------|----------------------|
-| Daily summary | `## 今日摘要` | `## 今日要点摘要` | `## 今日要点摘要（Deep Brief）` |
-| High-value tweets | `## 高价值推文` | `## 高价值推文完整清单` | `## 高价值推文完整清单` |
+| Semantic Role | Primary Path Heading | Compatibility Heading | Fallback Path Heading | Legacy/Schema Heading |
+|---------------|----------------------|-----------------------|-----------------------|-----------------------|
+| Daily summary | `## 今日亮点` | `## 今日摘要` | `## 今日要点摘要` | `## 今日要点摘要（Deep Brief）` |
+| High-value tweets | `## 高价值推文` | `## 高价值推文完整清单` | `## 高价值推文完整清单` | `## 高价值推文完整清单` |
 
-Extraction rule: for each historical report, try headings in order (primary → fallback → legacy). Use the first match found. If no alias matches, mark that day as `skipped` in diagnostics.
+Extraction rule: for each historical report, try headings in order (primary → compatibility → fallback → legacy). Use the first match found. If no alias matches, mark that day as `skipped` in diagnostics.
 
 ## Best-effort Behavior Matrix
 
@@ -93,7 +93,7 @@ Extraction rule: for each historical report, try headings in order (primary → 
 4. If 0 historical reports are available on Sunday, the daily report still publishes successfully (no weekly section appended); `weeklyDigest.sourceCount=0` is logged.
 5. `stripMaintenanceSections()` does not remove `## 本周回顾` or any blockquote content within it.
 6. Worker `/history` page renders Sunday reports normally (no layout breakage).
-7. `extractSummary()` still returns the daily summary (matches `## 今日要点摘要` or `## 今日摘要` via its existing regex), not weekly content.
+7. `extractSummary()` still returns the daily summary (matches `## 今日亮点`, `## 今日摘要`, or `## 今日要点摘要` via its existing regex), not weekly content.
 8. `isWeeklyDigestDay()` is testable with injected timestamps; tests cover Sunday, non-Sunday, and Asia/Shanghai midnight boundary.
 9. `weeklyDigest.sourceCount` and `weeklyDigest.skippedCount` are exposed in `analyze.result.json` or maintenance diagnostics.
 
