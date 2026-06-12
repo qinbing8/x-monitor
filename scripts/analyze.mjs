@@ -145,6 +145,14 @@ function normalizeTweetTextForHeuristics(text) {
   return normalizeTweetTextForPrompt(text).normalize('NFKC');
 }
 
+// 仅清除开头的提及簇与转推前缀（如 `@a @b ...`、`RT @x: ...`），保留正文中的正常提及。
+// 用于本地兜底日报，避免把账号当成条目主语。
+function stripLeadingMentions(text) {
+  return String(text ?? '')
+    .replace(/^\s*(?:RT\s+)?(?:@\w+[\s:：,，]+)+/i, '')
+    .trim();
+}
+
 export function compactTweetText(text, maxChars = MAX_DIGEST_EVIDENCE_TEXT_CHARS) {
   const normalized = normalizeTweetTextForPrompt(text);
   if (normalized.length <= maxChars) return normalized;
@@ -468,13 +476,14 @@ function buildLocalDigestSummaryEntries(items, chunkIndex) {
     .filter(Boolean);
   const summaryParts = rankedItems
     .slice(0, 2)
-    .map((item) => compactTweetText(String(item?.text ?? '').replace(/https?:\/\/\S+/gi, '').trim(), 72))
+    .map((item) => compactTweetText(stripLeadingMentions(String(item?.text ?? '').replace(/https?:\/\/\S+/gi, '').trim()), 72))
     .filter(Boolean);
   const headlineBase = summaryParts[0]
     ? compactTweetText(summaryParts[0], MAX_DIGEST_SUMMARY_HEADLINE_CHARS)
     : `第 ${chunkIndex + 1} 组重点更新`;
-  const summaryBase = summaryParts.length > 0
-    ? summaryParts.join('；')
+  const remainingParts = summaryParts.slice(1);
+  const summaryBase = remainingParts.length > 0
+    ? remainingParts.join('；')
     : `本组包含 ${rankedItems.length} 条高价值推文线索。`;
 
   return [{
@@ -1709,15 +1718,20 @@ function buildStructuredFallbackDailyBrief({
   const displayDigestItems = preferredDigestItems.length > 0 ? preferredDigestItems : rankedDigestItems;
   const promotionalItemsDropped = preferredDigestItems.length > 0 && preferredDigestItems.length < rankedDigestItems.length;
 
-  const summaryLines = ((safeChunkSummaries.length > 0 && !promotionalItemsDropped) ? safeChunkSummaries : displayDigestItems.slice(0, 4).map((item) => ({
-    headline: compactReadableText(item.text, 60) || '重点更新',
-    summary: compactReadableText(item.text, 100),
-  })))
+  const summaryLines = ((safeChunkSummaries.length > 0 && !promotionalItemsDropped) ? safeChunkSummaries : displayDigestItems.slice(0, 4).map((item) => {
+    const cleanedText = stripLeadingMentions(compactReadableText(item.text, 100));
+    return {
+      headline: cleanedText || '重点更新',
+      summary: '',
+    };
+  }))
     .slice(0, 4)
     .map((entry) => {
-      const headline = normalizeTweetTextForDisplay(entry?.headline ?? '') || '重点更新';
+      const headline = stripLeadingMentions(normalizeTweetTextForDisplay(entry?.headline ?? '')) || '重点更新';
       const summary = compactReadableText(entry?.summary ?? '', MAX_DIGEST_SUMMARY_TEXT_CHARS);
-      return summary ? `- ${headline}：${summary}` : `- ${headline}`;
+      // 避免 headline 与 summary 首段重复（兜底路径常取自同一条推文）。
+      const redundant = summary && (summary.startsWith(headline) || headline.startsWith(summary));
+      return summary && !redundant ? `- ${headline}：${summary}` : `- ${headline}`;
     });
 
   const editorLines = displayDigestItems.slice(0, 5).map((item) => {

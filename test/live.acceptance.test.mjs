@@ -145,10 +145,15 @@ async function runLiveAcceptanceAttempt({ configPath, runDate, referenceTime, at
   const finalMarkdown = String(await readFile(analyzeSummary.finalReportPath, 'utf8')).trim();
   const markdown = String(analyzeResult.answer?.markdown ?? '').trim();
 
+  assert.ok(
+    String(analyzeResult.meta.provider ?? '').length > 0,
+    'analyzeResult.meta.provider must be a non-empty string',
+  );
   assert.equal(analyzeResult.meta.rosterModel, 'gpt-5.4');
   assert.equal(analyzeResult.meta.screeningModel, 'gpt-5.4');
+  const answerSource = String(analyzeResult.answer?.source ?? '');
   assert.ok(
-    ['model', 'fallback'].includes(String(analyzeResult.answer?.source ?? '')),
+    ['model', 'fallback'].includes(answerSource),
     `Analyze did not generate a usable daily brief. Fetch diagnosis: ${analyzeResult.meta.fetchDiagnosis?.note ?? 'unknown'}`,
   );
   assert.ok(markdown.length > 0, 'GPT daily brief is empty');
