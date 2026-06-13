@@ -1,0 +1,13 @@
+{
+  "id": "improve-report-ui-style",
+  "title": "参考 linux.do 日报 UI 风格优化输出格式，移除 @用户名显示",
+  "status": "completed",
+  "strategy": "refactor-safely",
+  "currentPhase": "5-verify",
+  "nextAction": "已完成所有步骤，测试通过，准备提交",
+  "gate": null,
+  "branch": "master",
+  "scope": "improve-report-ui-style",
+  "createdAt": "2026-06-07T10:39:41Z",
+  "completedAt": "2026-06-07T11:45:00Z"
+}

@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}
+{"file": "scripts/analyze.mjs", "reason": "核心文件：compactTweetText/compactReadableText/buildStructuredFallbackDailyBrief"}
+{"file": "scripts/publish-report.mjs", "reason": "stripMaintenanceSections 删除 banner 导致用户无感知降级"}
+{"file": "https://x.bbq08.ip-ddns.com/", "reason": "发布页实际展示内容，证据源"}

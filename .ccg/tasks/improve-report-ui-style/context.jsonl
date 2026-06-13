@@ -1,0 +1,5 @@
+{"_example": "Fill with {\"file\": \"path\", \"reason\": \"why\"}. Seed rows are skipped."}
+{"file": "linux.do人工智能技术日报-26-06-07 .pdf", "reason": "参考目标 UI 样式"}
+{"file": "scripts/publish-report.mjs", "reason": "Markdown 渲染逻辑"}
+{"file": "scripts/analyze.mjs", "reason": "AI 提示词与输出生成"}
+{"file": "docs/project/2026-05-27-weekly-digest-proposal.md", "reason": "项目文档规范"}

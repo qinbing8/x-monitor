@@ -127,7 +127,7 @@ function renderTemplate(template, vars) {
 function normalizeTweetTextForPrompt(text) {
   return String(text ?? '')
     .replace(/\r/g, '')
-    .replace(/\n+/g, ' \\n ')
+    .replace(/\n+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1718,21 +1718,17 @@ function buildStructuredFallbackDailyBrief({
   const displayDigestItems = preferredDigestItems.length > 0 ? preferredDigestItems : rankedDigestItems;
   const promotionalItemsDropped = preferredDigestItems.length > 0 && preferredDigestItems.length < rankedDigestItems.length;
 
-  const summaryLines = ((safeChunkSummaries.length > 0 && !promotionalItemsDropped) ? safeChunkSummaries : displayDigestItems.slice(0, 4).map((item) => {
-    const cleanedText = stripLeadingMentions(compactReadableText(item.text, 100));
-    return {
-      headline: cleanedText || '重点更新',
-      summary: '',
-    };
-  }))
-    .slice(0, 4)
-    .map((entry) => {
-      const headline = stripLeadingMentions(normalizeTweetTextForDisplay(entry?.headline ?? '')) || '重点更新';
-      const summary = compactReadableText(entry?.summary ?? '', MAX_DIGEST_SUMMARY_TEXT_CHARS);
-      // 避免 headline 与 summary 首段重复（兜底路径常取自同一条推文）。
-      const redundant = summary && (summary.startsWith(headline) || headline.startsWith(summary));
-      return summary && !redundant ? `- ${headline}：${summary}` : `- ${headline}`;
-    });
+  const summaryLines = (safeChunkSummaries.length > 0 && !promotionalItemsDropped)
+    ? safeChunkSummaries.slice(0, 4).map((entry) => {
+        const headline = stripLeadingMentions(normalizeTweetTextForDisplay(entry?.headline ?? '')) || '重点更新';
+        const summary = compactReadableText(entry?.summary ?? '', MAX_DIGEST_SUMMARY_TEXT_CHARS);
+        const redundant = summary && (summary.startsWith(headline) || headline.startsWith(summary));
+        return summary && !redundant ? `- ${headline}：${summary}` : `- ${headline}`;
+      })
+    : displayDigestItems.slice(0, 4).map((item) => {
+        const text = stripLeadingMentions(compactReadableText(item.text, 100));
+        return `- ${text || '重点更新'}`;
+      });
 
   const editorLines = displayDigestItems.slice(0, 5).map((item) => {
     const text = compactReadableText(item?.text ?? '', 90);

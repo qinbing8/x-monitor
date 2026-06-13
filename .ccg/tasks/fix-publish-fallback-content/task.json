@@ -1,0 +1,13 @@
+{
+  "id": "fix-publish-fallback-content",
+  "title": "修复发布页 fallback 内容展示异常：\n 字面反斜杠与拼接不自然",
+  "status": "completed",
+  "strategy": "debug-investigate",
+  "currentPhase": "5-fix",
+  "nextAction": "已完成，等待提交",
+  "gate": null,
+  "branch": "master",
+  "scope": "fix-publish-fallback-content",
+  "createdAt": "2026-06-13T00:00:00.000Z",
+  "completedAt": "2026-06-13T00:00:00.000Z"
+}
