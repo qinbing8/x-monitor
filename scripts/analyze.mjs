@@ -1718,6 +1718,12 @@ function buildStructuredFallbackDailyBrief({
   const displayDigestItems = preferredDigestItems.length > 0 ? preferredDigestItems : rankedDigestItems;
   const promotionalItemsDropped = preferredDigestItems.length > 0 && preferredDigestItems.length < rankedDigestItems.length;
 
+  function extractAuthorName(item) {
+    const handle = String(item?.username ?? '').trim();
+    const displayName = String(item?.displayName ?? '').trim();
+    return displayName || (handle ? `@${handle}` : '未知作者');
+  }
+
   const summaryLines = (safeChunkSummaries.length > 0 && !promotionalItemsDropped)
     ? safeChunkSummaries.slice(0, 4).map((entry) => {
         const headline = stripLeadingMentions(normalizeTweetTextForDisplay(entry?.headline ?? '')) || '重点更新';
@@ -1725,20 +1731,16 @@ function buildStructuredFallbackDailyBrief({
         const redundant = summary && (summary.startsWith(headline) || headline.startsWith(summary));
         return summary && !redundant ? `- ${headline}：${summary}` : `- ${headline}`;
       })
-    : displayDigestItems.slice(0, 4).map((item, index) => {
-        const handle = String(item?.username ?? '').trim();
-        const displayName = String(item?.displayName ?? '').trim();
-        const author = displayName || (handle ? `@${handle}` : '未知作者');
+    : displayDigestItems.slice(0, 4).map((item) => {
+        const author = extractAuthorName(item);
         return `- ${author} 的推文 [查看原文](${item?.originalUrl ?? '#'})`;
       });
 
   const editorLines = displayDigestItems.slice(0, 5).map((item) => {
-    const handle = String(item?.username ?? '').trim();
-    const displayName = String(item?.displayName ?? '').trim();
-    const author = displayName || (handle ? `@${handle}` : '未知作者');
+    const author = extractAuthorName(item);
     const url = String(item?.originalUrl ?? '').trim();
     const textPreview = compactReadableText(item?.text ?? '', 60);
-    return `- ${author}：${textPreview}${textPreview && textPreview.length >= 59 ? '…' : ''} [查看原文](${url || '#'})`;
+    return `- ${author}：${textPreview}${textPreview.length >= 59 ? '…' : ''} [查看原文](${url || '#'})`;
   });
 
   const digestLines = displayDigestItems.slice(0, 8).map((item) => {
