@@ -3,6 +3,8 @@
 .gh-cache/
 .tmp/
 data/
+/logs/
+/*.pdf
 config.json
 config.github-actions.generated.json
 config.fetch-smoke.generated.json

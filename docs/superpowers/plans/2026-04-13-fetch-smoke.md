@@ -152,7 +152,7 @@ jobs:
 
 - [ ] **Step 2: Add the Grok runtime model probe step**
 
-Embed the same probing logic shape already used in `daily-report.yml`, and persist the chosen model into runtime files:
+Embed the same probing logic shape already used in `daily-report.yml`, and persist the chosen model for both later commands in this step and later workflow steps:
 
 ```yaml
       - name: Prepare fetch-smoke runtime files
@@ -167,29 +167,38 @@ Embed the same probing logic shape already used in `daily-report.yml`, and persi
           // Keep normalizeBaseUrl / unique / resolveGrokModel aligned with daily-report.yml.
           EOF
           )"
+          export GROK_RUNTIME_MODEL
+          if [ -n "${GITHUB_ENV:-}" ]; then
+            printf 'GROK_RUNTIME_MODEL=%s\n' "${GROK_RUNTIME_MODEL}" >> "${GITHUB_ENV}"
+          fi
           echo "Using GROK_RUNTIME_MODEL=${GROK_RUNTIME_MODEL}"
 ```
 
 - [ ] **Step 3: Generate the 3-account probe CSV and smoke config**
 
-Append the runtime step with explicit serial overrides and a fixed temporary CSV:
+Append the runtime step with explicit serial overrides and a fixed temporary CSV. Use Node to write CSV/JSON files instead of shell heredocs to avoid YAML indentation polluting CSV columns and to safely escape any special characters (`"`, `\`, `&`) in env values. The previous step must export `GROK_RUNTIME_MODEL`; otherwise this Node process will write an empty model into `search.json`:
 
 ```yaml
-          cat > .tmp/github-actions/fetch-smoke.csv <<'EOF'
-          handle,displayName,userPageUrl,followersCount,postCount,totalFavouritesByUser,isBlueVerified,verified
-          openai,OpenAI,https://x.com/openai,0,1,0,false,false
-          anthropicai,Anthropic,https://x.com/AnthropicAI,0,1,0,false,false
-          Grok,GroK,https://x.com/grok,0,1,0,false,false
-          EOF
+          node --input-type=module - <<'EOF'
+          import { writeFileSync } from 'node:fs';
 
-          cat > .tmp/github-actions/search.json <<EOF
-          {
-            "grok": {
-              "apiUrl": "${GROK_BASE_URL}",
-              "apiKey": "${GROK_API_KEY}",
-              "model": "${GROK_RUNTIME_MODEL}"
-            }
-          }
+          const csvLines = [
+            'handle,displayName,userPageUrl,followersCount,postCount,totalFavouritesByUser,isBlueVerified,verified',
+            'openai,OpenAI,https://x.com/openai,0,1,0,false,false',
+            'anthropicai,Anthropic,https://x.com/AnthropicAI,0,1,0,false,false',
+            'Grok,GroK,https://x.com/grok,0,1,0,false,false',
+          ];
+          writeFileSync('.tmp/github-actions/fetch-smoke.csv', csvLines.join('\n') + '\n');
+
+          const searchCredentials = {
+            grok: {
+              apiUrl: process.env.GROK_BASE_URL ?? '',
+              apiKey: process.env.GROK_API_KEY ?? '',
+              model: process.env.GROK_RUNTIME_MODEL ?? '',
+            },
+          };
+          writeFileSync('.tmp/github-actions/search.json', JSON.stringify(searchCredentials, null, 2));
+          writeFileSync('.tmp/github-actions/openclaw.json', JSON.stringify({}, null, 2));
           EOF
 
           node --input-type=module - <<'EOF'
@@ -213,7 +222,7 @@ Append the runtime step with explicit serial overrides and a fixed temporary CSV
           EOF
 ```
 
-Note: `openclaw.json` can be a tiny placeholder provider doc because `--mode fetch` does not invoke analysis, but the config loader still expects every declared credential file path to exist.
+Note: `openclaw.json` is written as `{}` because `--mode fetch` does not invoke analysis; the config loader only checks that every declared credential file path exists.
 
 - [ ] **Step 4: Run fetch-only and collect diagnostic JSON**
 
@@ -237,9 +246,8 @@ Add the smoke execution and summary steps:
 
           const summary = JSON.parse(readFileSync('.tmp/github-actions/fetch-smoke-summary.json', 'utf8'));
           const fetchResult = JSON.parse(readFileSync(summary.fetch.fetchResultPath, 'utf8'));
-          const batches = Array.isArray(JSON.parse(readFileSync(summary.fetch.fetchRawPath, 'utf8')).batches)
-            ? JSON.parse(readFileSync(summary.fetch.fetchRawPath, 'utf8')).batches
-            : [];
+          const fetchRaw = JSON.parse(readFileSync(summary.fetch.fetchRawPath, 'utf8'));
+          const batches = Array.isArray(fetchRaw.batches) ? fetchRaw.batches : [];
 
           const timeoutCount = batches.filter((batch) => batch?.diagnostics?.classification === 'timeout').length;
           const http500Count = batches.filter((batch) => Number(batch?.diagnostics?.httpStatus) === 500).length;
@@ -256,7 +264,7 @@ Add the smoke execution and summary steps:
             http500Count,
           };
           console.log(JSON.stringify(payload, null, 2));
-          if (!payload.chosenModel || payload.timeoutCount + payload.http500Count >= 3 || (payload.tweetCount === 0 && payload.coveredAccountCount === 0)) {
+          if (!payload.chosenModel || payload.timeoutCount + payload.http500Count >= 2 || (payload.tweetCount === 0 && payload.coveredAccountCount === 0)) {
             process.exitCode = 1;
           }
           EOF
