@@ -1104,6 +1104,56 @@ function formatFinalDraftFailureSummary(errorDetails) {
   return parts.join(' | ').slice(0, 220) || null;
 }
 
+function parseHttpErrorMessage(message) {
+  const raw = String(message ?? '').trim();
+  const match = raw.match(/^HTTP\s+(\d+):\s*([\s\S]*)$/i);
+  const status = match ? Number(match[1]) : null;
+  const bodyText = match ? match[2].trim() : raw;
+  let providerMessage = bodyText;
+  try {
+    const body = JSON.parse(bodyText);
+    providerMessage = body?.error?.message ?? body?.message ?? providerMessage;
+  } catch {
+    const messageMatch = bodyText.match(/"message"\s*:\s*"([^"]+)"/i);
+    if (messageMatch) providerMessage = messageMatch[1];
+  }
+  return {
+    status: Number.isFinite(status) ? status : null,
+    providerMessage: String(providerMessage ?? '').replace(/\s+/g, ' ').trim(),
+  };
+}
+
+function detectFinalDraftModelAvailabilityIssue(errorDetails) {
+  if (!errorDetails) return null;
+  const parsed = parseHttpErrorMessage(errorDetails.message);
+  const httpStatus = Number.isFinite(Number(errorDetails.httpStatus))
+    ? Number(errorDetails.httpStatus)
+    : parsed.status;
+  const combined = [
+    parsed.providerMessage,
+    errorDetails.message,
+    errorDetails.code,
+  ].join(' ');
+  if (httpStatus === 401 && /invalid api key/i.test(combined)) {
+    return '401 Invalid API key，请检查模型可用性';
+  }
+  return null;
+}
+
+function findFinalDraftModelAvailabilityIssue(finalDraftAttempts) {
+  for (const attempt of finalDraftAttempts ?? []) {
+    const issue = detectFinalDraftModelAvailabilityIssue(attempt?.error);
+    if (issue) return issue;
+  }
+  return null;
+}
+
+function buildFinalDraftFailureNotice({ modelAvailabilityIssue = null, analyzeErrorFileName = null } = {}) {
+  const reason = modelAvailabilityIssue ? `：${modelAvailabilityIssue}` : '';
+  const diagnostic = analyzeErrorFileName ? `详细诊断见 ${analyzeErrorFileName}。` : '';
+  return `> 终稿模型请求失败${reason}。以下内容基于已完成的抓取、筛选与摘要结果自动整理。${diagnostic}`;
+}
+
 function buildFinalDraftAttemptRecord({ kind, profile, status, result = null, error = null } = {}) {
   const errorDetails = error ? buildFinalDraftErrorDetails(error) : null;
   return {
@@ -1362,9 +1412,10 @@ async function finalizeAnalyzeRun({
           durationMs: Number(failureArtifact.error?.continuation?.durationMs ?? 0) || 0,
           diagnostics: failureArtifact.error ?? null,
         };
-        failureSummary = analyzeErrorPath
-          ? `> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。详细诊断见 ${analyzeErrorFileName}。`
-          : '> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。';
+        failureSummary = buildFinalDraftFailureNotice({
+          modelAvailabilityIssue: findFinalDraftModelAvailabilityIssue(finalDraftAttempts),
+          analyzeErrorFileName: analyzeErrorPath ? analyzeErrorFileName : null,
+        });
       }
     } else {
       const failureArtifact = buildFinalDraftFailureArtifact({
@@ -1426,12 +1477,14 @@ async function finalizeAnalyzeRun({
         durationMs: Number(failureArtifact.error?.continuation?.durationMs ?? 0) || 0,
         diagnostics: failureArtifact.error ?? null,
       };
-      failureSummary = analyzeErrorPath
-        ? `> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。详细诊断见 ${analyzeErrorFileName}。`
-        : '> 终稿模型请求失败，以下内容基于已完成的抓取、筛选与摘要结果自动整理。';
+      failureSummary = buildFinalDraftFailureNotice({
+        modelAvailabilityIssue: findFinalDraftModelAvailabilityIssue(finalDraftAttempts),
+        analyzeErrorFileName: analyzeErrorPath ? analyzeErrorFileName : null,
+      });
     }
   }
 
+  const modelAvailabilityIssue = findFinalDraftModelAvailabilityIssue(finalDraftAttempts);
   const outputText = continuationResult.text.trim();
   let answerSource = 'model';
   let finalMarkdown = injectQualityBanner(outputText, quality);
@@ -1506,6 +1559,7 @@ async function finalizeAnalyzeRun({
       generatedByFallbackModel: usedFallbackModel && answerSource === 'fallback_model',
       primaryBriefFailure: primaryFailure,
       primaryBriefFailureSummary,
+      modelAvailabilityIssue,
       candidateSelectionMode: digestSelection.mode,
       screeningChunkCount: digestSelection.screeningChunkCount,
       screeningCandidateCount: digestSelection.screeningCandidateCount,
@@ -1739,6 +1793,12 @@ function buildStructuredFallbackDailyBrief({
     return displayName || (handle ? `@${handle}` : '未知作者');
   }
 
+  function readableFallbackText(item, maxChars) {
+    const text = compactReadableText(item?.text ?? '', maxChars);
+    if (!text || isEnglishDominantText(text)) return '高价值推文线索';
+    return text;
+  }
+
   const summaryLines = (safeChunkSummaries.length > 0 && !promotionalItemsDropped)
     ? safeChunkSummaries.slice(0, 4).map((entry) => {
         const headline = stripLeadingMentions(normalizeTweetTextForDisplay(entry?.headline ?? '')) || '重点更新';
@@ -1747,26 +1807,28 @@ function buildStructuredFallbackDailyBrief({
         return summary && !redundant ? `- ${headline}：${summary}` : `- ${headline}`;
       })
     : displayDigestItems.slice(0, 4).map((item) => {
-        const author = extractAuthorName(item);
-        return `- ${author} 的推文 [查看原文](${item?.originalUrl ?? '#'})`;
+        const headline = readableFallbackText(item, 80);
+        return `- ${headline}${headline.length >= 79 ? '…' : ''} [查看原文](${item?.originalUrl ?? '#'})`;
       });
 
   const editorLines = displayDigestItems.slice(0, 5).map((item) => {
     const author = extractAuthorName(item);
     const url = String(item?.originalUrl ?? '').trim();
-    const textPreview = compactReadableText(item?.text ?? '', 60);
+    const textPreview = readableFallbackText(item, 60);
     return `- ${author}：${textPreview}${textPreview.length >= 59 ? '…' : ''} [查看原文](${url || '#'})`;
   });
 
   const digestLines = displayDigestItems.slice(0, 8).map((item) => {
-    const text = compactReadableText(item?.text ?? '', 110);
+    const author = extractAuthorName(item);
+    const text = readableFallbackText(item, 110);
     const url = String(item?.originalUrl ?? '').trim();
     const metrics = [
       item.viewCount ? `浏览 ${item.viewCount}` : null,
       item.likeCount ? `点赞 ${item.likeCount}` : null,
       item.replyCount ? `回复 ${item.replyCount}` : null,
     ].filter(Boolean).join(' · ');
-    return `- ${text}${url ? ` ${url}` : ''}${metrics ? ` | ${metrics}` : ''}`.trim();
+    const subject = text === '高价值推文线索' ? `${author} 的${text}` : text;
+    return `- ${subject}${url ? ` ${url}` : ''}${metrics ? ` | ${metrics}` : ''}`.trim();
   });
 
   return [

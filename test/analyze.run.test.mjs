@@ -444,8 +444,8 @@ test('runAnalyze fallback brief keeps multiline tweet summaries readable', async
   const multilineFetchResponse = [
     '```csv',
     'username,tweet_id,created_at,text,original_url',
-    '"alice","190001","2026-03-23T01:02:03Z","Line one.',
-    'Line two with more context.","https://x.com/alice/status/190001"',
+    '"alice","190001","2026-03-23T01:02:03Z","第一行是工具发布。',
+    '第二行补充更多上下文。","https://x.com/alice/status/190001"',
     '```',
   ].join('\n');
 
@@ -464,7 +464,7 @@ test('runAnalyze fallback brief keeps multiline tweet summaries readable', async
     });
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
-    assert.match(finalReport, /Line one\.\s+Line two with more context\./);
+    assert.match(finalReport, /第一行是工具发布。\s+第二行补充更多上下文。/);
     assert.doesNotMatch(finalReport, /\\n/);
   } finally {
     await fixture.cleanup();
@@ -513,7 +513,8 @@ test('runAnalyze falls back when the GPT brief is structurally weak despite bein
     assert.doesNotMatch(analyzeResult.answer.markdown, /## 今日要点摘要/);
     assert.match(analyzeResult.answer.markdown, /编辑精选/);
     assert.match(analyzeResult.answer.markdown, /高价值推文完整清单/);
-    assert.match(analyzeResult.answer.markdown, /Shipped a new CLI for tracing agent runs/);
+    assert.match(analyzeResult.answer.markdown, /高价值推文线索/);
+    assert.doesNotMatch(analyzeResult.answer.markdown, /Shipped a new CLI for tracing agent runs/);
   } finally {
     await fixture.cleanup();
   }
@@ -778,6 +779,41 @@ test('runAnalyze preserves a final-draft diagnostic artifact and falls back to a
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
     assert.match(finalReport, /高价值推文完整清单/);
+    assert.doesNotMatch(finalReport, /Shipped a new CLI/);
+    assert.doesNotMatch(finalReport, /Strong write-up/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze shows a clear model availability hint when final draft auth fails', async () => {
+  const fixture = await createMockSkillFixture();
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: async () => ({
+        ok: false,
+        status: 401,
+        headers: {},
+        text: async () => '{"error":{"message":"Invalid API key","type":"bad_response_status_code","code":"bad_response_status_code"}}',
+      }),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    assert.equal(analyzeResult.meta.modelAvailabilityIssue, '401 Invalid API key，请检查模型可用性');
+
+    const finalReport = await readText(analyzeSummary.finalReportPath);
+    assert.match(finalReport, /401 Invalid API key，请检查模型可用性/);
+    assert.doesNotMatch(finalReport, /## 今日亮点[\s\S]*Alice Maker 的推文/);
   } finally {
     await fixture.cleanup();
   }

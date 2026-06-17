@@ -343,6 +343,10 @@ function stripMaintenanceSections(markdown) {
       skipping = maintenanceHeadingPattern.test(trimmed);
       if (skipping) continue;
     }
+    if (/请检查模型可用性|Invalid API key/i.test(trimmed)) {
+      kept.push(line);
+      continue;
+    }
     if (maintenanceNoticePattern.test(trimmed)) continue;
     if (!skipping) kept.push(line);
   }
@@ -413,6 +417,7 @@ function buildMaintenanceArtifact({ runDate, runId, analyzeResult, reportKey, ma
       summaryFailedChunkCount: meta.summaryFailedChunkCount ?? null,
       finalDraftAttempts: meta.finalDraftAttempts ?? [],
       primaryBriefFailureSummary: meta.primaryBriefFailureSummary ?? null,
+      modelAvailabilityIssue: meta.modelAvailabilityIssue ?? null,
       rosterScoringError: meta.rosterScoringError ?? null,
     },
     artifacts: {

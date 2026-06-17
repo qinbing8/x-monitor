@@ -235,3 +235,61 @@ test('publishRunArtifacts writes publishable files and latest/index metadata', a
   assert.equal(maintenanceJson.quality.needsReview, true);
   assert.match(maintenanceJson.quality.note, /Low-coverage digest/);
 });
+
+test('publishRunArtifacts keeps model availability notices visible', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'x-monitor-publish-model-issue-'));
+  const runDir = resolve(root, 'data', '2026-03-23', 'run-080000-abcdef12');
+  const outputDir = resolve(root, '.tmp', 'published');
+  const summaryPath = resolve(root, '.tmp', 'run-summary.json');
+  const previousIndexPath = resolve(root, '.tmp', 'previous-index.json');
+
+  await mkdir(runDir, { recursive: true });
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(resolve(runDir, 'final.md'), [
+    '# X 日报 | 2026-03-23',
+    '',
+    '> 终稿模型请求失败：401 Invalid API key，请检查模型可用性。以下内容基于已完成的抓取、筛选与摘要结果自动整理。',
+    '',
+    '## 今日亮点',
+    '- Alice Maker 的推文 [查看原文](https://x.com/alice/status/190001)',
+  ].join('\n'), 'utf8');
+  await writeFile(resolve(runDir, 'analyze.result.json'), JSON.stringify({
+    meta: {
+      analyzedAt: '2026-03-23T08:10:00.000Z',
+      modelAvailabilityIssue: '401 Invalid API key，请检查模型可用性',
+    },
+    answer: {
+      source: 'fallback',
+      generatedBy: 'structured_fallback',
+    },
+    quality: {
+      needsReview: true,
+      status: 'degraded',
+      note: 'Final draft model auth failed.',
+    },
+  }, null, 2), 'utf8');
+  await writeFile(summaryPath, JSON.stringify({
+    mode: 'run',
+    analyze: {
+      runDir,
+      analyzeResultPath: resolve(runDir, 'analyze.result.json'),
+      finalReportPath: resolve(runDir, 'final.md'),
+    },
+  }, null, 2), 'utf8');
+  await writeFile(previousIndexPath, '[]', 'utf8');
+
+  await publishRunArtifacts({
+    summaryPath,
+    outputDir,
+    previousIndexPath,
+  });
+
+  const publishedDir = resolve(outputDir, 'reports', '2026-03-23', 'run-080000-abcdef12');
+  const finalHtml = await readFile(resolve(publishedDir, 'final.html'), 'utf8');
+  const publicMarkdown = await readFile(resolve(publishedDir, 'final.md'), 'utf8');
+  const maintenanceJson = JSON.parse(await readFile(resolve(publishedDir, 'maintenance.json'), 'utf8'));
+
+  assert.match(finalHtml, /401 Invalid API key，请检查模型可用性/);
+  assert.match(publicMarkdown, /401 Invalid API key，请检查模型可用性/);
+  assert.equal(maintenanceJson.pipeline.modelAvailabilityIssue, '401 Invalid API key，请检查模型可用性');
+});
