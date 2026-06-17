@@ -1439,6 +1439,9 @@ async function finalizeAnalyzeRun({
   const weakModelBrief = finalMarkdown
     ? (!continuationResult.truncated && isStructurallyWeakBrief(finalMarkdown))
     : false;
+  const languageMismatchBrief = finalMarkdown
+    ? hasEnglishDominantReportBody(finalMarkdown)
+    : false;
   if (weakModelBrief) {
     logger.warn('analyze_final_draft_weak', {
       runDate,
@@ -1447,8 +1450,22 @@ async function finalizeAnalyzeRun({
       substantiveLineCount,
     });
   }
-  if (!finalMarkdown || weakModelBrief) {
+  if (languageMismatchBrief) {
+    logger.warn('analyze_final_draft_language_mismatch', {
+      runDate,
+      analysisProfile: profile.name,
+      model: effectiveBriefProfile.modelId,
+    });
+  }
+  if (!finalMarkdown || weakModelBrief || languageMismatchBrief) {
     answerSource = 'fallback';
+    const fallbackSummary = failureSummary
+      ?? (weakModelBrief
+        ? '> 终稿模型返回了结构过弱的正文，以下内容基于已完成的抓取、筛选与摘要结果自动整理。'
+        : null)
+      ?? (languageMismatchBrief
+        ? '> 终稿模型返回的日报正文未按中文成稿，以下内容基于已完成的抓取、筛选与摘要结果自动整理。'
+        : null);
     finalMarkdown = injectQualityBanner(buildFallbackDailyBrief({
       runDate,
       quality,
@@ -1458,9 +1475,7 @@ async function finalizeAnalyzeRun({
       signalTweetCount: signalItems.length,
       digestItems,
       chunkSummaries,
-      failureSummary: failureSummary ?? (weakModelBrief
-        ? '> 终稿模型返回了结构过弱的正文，以下内容基于已完成的抓取、筛选与摘要结果自动整理。'
-        : null),
+      failureSummary: fallbackSummary,
     }), quality);
   } else if (usedFallbackModel) {
     answerSource = 'fallback_model';
@@ -1844,6 +1859,73 @@ function countSubstantiveBriefLines(markdown) {
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter((line) => line.length >= 8)
     .length;
+}
+
+function stripNonLanguageText(text) {
+  return String(text ?? '')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/\|\s*(?:浏览|点赞|回复|转发)\s+[^\n]*/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/@[A-Za-z0-9_]{1,15}/g, ' ')
+    .replace(/[★☆`*_#[\]()<>{}|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isEnglishDominantText(text) {
+  const normalized = stripNonLanguageText(text);
+  const cjkCount = (normalized.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const latinWordCount = (normalized.match(/[A-Za-z][A-Za-z0-9'-]{2,}/g) ?? []).length;
+  return cjkCount < 4 && latinWordCount >= 5;
+}
+
+function extractReportContentLines(markdown) {
+  const lines = String(markdown ?? '').replace(/\r/g, '').split('\n');
+  const contentLines = [];
+  let inCodeFence = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^```/.test(trimmed)) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (inCodeFence || !trimmed || /^#+\s+/.test(trimmed) || /^>\s+/.test(trimmed)) continue;
+    contentLines.push(trimmed.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, ''));
+  }
+  return contentLines;
+}
+
+function extractDailyHighlightLines(markdown) {
+  const lines = String(markdown ?? '').replace(/\r/g, '').split('\n');
+  const highlightLines = [];
+  let inHighlights = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^##\s+(?:今日亮点|今日摘要|今日要点摘要)(?:\s|（|\(|$)/.test(trimmed)) {
+      inHighlights = true;
+      continue;
+    }
+    if (inHighlights && /^##\s+/.test(trimmed)) break;
+    if (inHighlights && /^[-*]\s+/.test(trimmed)) {
+      highlightLines.push(trimmed.replace(/^[-*]\s+/, ''));
+    }
+  }
+  return highlightLines;
+}
+
+function hasEnglishDominantDailyHighlights(markdown) {
+  const highlightLines = extractDailyHighlightLines(markdown);
+  if (highlightLines.length === 0) return false;
+  const englishLineCount = highlightLines.filter(isEnglishDominantText).length;
+  return englishLineCount >= Math.ceil(highlightLines.length / 2);
+}
+
+function hasEnglishDominantReportBody(markdown) {
+  const contentLines = extractReportContentLines(markdown);
+  if (contentLines.length === 0) return false;
+  const englishLineCount = contentLines.filter(isEnglishDominantText).length;
+  return hasEnglishDominantDailyHighlights(markdown)
+    || (englishLineCount >= 2 && englishLineCount >= Math.ceil(contentLines.length / 2));
 }
 
 function isStructurallyWeakBrief(markdown) {

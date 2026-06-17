@@ -519,6 +519,159 @@ test('runAnalyze falls back when the GPT brief is structurally weak despite bein
   }
 });
 
+test('runAnalyze falls back when 今日亮点 is English despite being structurally complete', async () => {
+  const fixture = await createMockSkillFixture();
+  const englishHighlightsMarkdown = [
+    '# X 日报 | 2026-03-23',
+    '',
+    '## 今日亮点',
+    '- Shipped a new CLI for tracing agent runs with a public demo link.',
+    '- Published an eval-driven development workflow for AI agents.',
+    '',
+    '## 高价值推文',
+    '### 一、开源项目与工具',
+    '- Shipped a new CLI for tracing agent runs. https://x.com/alice/status/190001 | 浏览 100 · 点赞 10 · 回复 2',
+  ].join('\n');
+
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(englishHighlightsMarkdown),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    const highlightsSection = analyzeResult.answer.markdown
+      .split(/\n##\s+今日亮点\n/)[1]
+      ?.split(/\n##\s+/)[0] ?? '';
+    assert.doesNotMatch(highlightsSection, /Shipped a new CLI/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze falls back when only 今日亮点 is English', async () => {
+  const fixture = await createMockSkillFixture();
+  const englishOnlyHighlightsMarkdown = [
+    '# X 日报 | 2026-03-23',
+    '',
+    '## 今日亮点',
+    '- Shipped a new CLI for tracing agent runs with a public demo link.',
+    '- Published an eval-driven development workflow for AI agents.',
+    '',
+    '## 高价值推文',
+    '### 一、开源项目与工具',
+    '- 开发者发布 agent tracing CLI，并提供可查看的 Demo 链接。https://x.com/alice/status/190001 | 浏览 100 · 点赞 10 · 回复 2',
+    '- 有文章系统梳理 eval-driven development 在智能体开发中的实践方式。https://x.com/alice/status/190002 | 浏览 80 · 点赞 8 · 回复 1',
+    '- tracing dashboard 支持调试 agent 运行过程，适合排查复杂工作流。https://x.com/alice/status/190003 | 浏览 70 · 点赞 6 · 回复 1',
+    '- 相关工具链围绕可观测性、评测和调试形成更完整闭环。https://x.com/alice/status/190004 | 浏览 60 · 点赞 5 · 回复 1',
+  ].join('\n');
+
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(englishOnlyHighlightsMarkdown),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    const highlightsSection = analyzeResult.answer.markdown
+      .split(/\n##\s+今日亮点\n/)[1]
+      ?.split(/\n##\s+/)[0] ?? '';
+    assert.doesNotMatch(highlightsSection, /Shipped a new CLI/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze falls back when later report sections are English', async () => {
+  const fixture = await createMockSkillFixture();
+  const englishBodyMarkdown = [
+    '# X 日报 | 2026-03-23',
+    '',
+    '## 今日亮点',
+    '- 今天值得关注的是 agent tracing 工具和评测工作流。',
+    '',
+    '## 高价值推文',
+    '### 一、开源项目与工具',
+    '- Shipped a new CLI for tracing agent runs with a public demo link. https://x.com/alice/status/190001 | 浏览 100 · 点赞 10 · 回复 2',
+    '- Published an eval-driven development workflow for AI agents. https://x.com/alice/status/190002 | 浏览 80 · 点赞 8 · 回复 1',
+    '- Released a tracing dashboard for agent runs and debugging sessions. https://x.com/alice/status/190003 | 浏览 70 · 点赞 6 · 回复 1',
+  ].join('\n');
+
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(englishBodyMarkdown),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    assert.match(analyzeResult.answer.markdown, /未按中文成稿/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test('runAnalyze falls back when the highlight heading and bullets are English', async () => {
+  const fixture = await createMockSkillFixture();
+  const englishHeadingMarkdown = [
+    '# X 日报 | 2026-03-23',
+    '',
+    '## Today\'s Highlights',
+    '- Shipped a new CLI for tracing agent runs with a public demo link.',
+    '- Published an eval-driven development workflow for AI agents.',
+    '',
+    '## High-value Tweets',
+    '- Shipped a new CLI for tracing agent runs. https://x.com/alice/status/190001 | 浏览 100 · 点赞 10 · 回复 2',
+  ].join('\n');
+
+  try {
+    await runFetch({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      referenceTime: FIXTURE_REFERENCE_TIME,
+      fetchImpl: createCompletionFetch(FIXTURE_TWEET_FETCH_RESPONSE),
+    });
+
+    const analyzeSummary = await runAnalyze({
+      configPath: fixture.configPath,
+      date: '2026-03-23',
+      fetchImpl: createCompletionFetch(englishHeadingMarkdown),
+    });
+
+    const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
+    assert.equal(analyzeResult.answer.source, 'fallback');
+    assert.doesNotMatch(analyzeResult.answer.markdown, /Today/);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test('runAnalyze retries final draft with a fallback brief model when the primary model is unavailable', async () => {
   const fixture = await createMockSkillFixture();
   try {
