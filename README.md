@@ -297,7 +297,53 @@ node --test test/live.acceptance.test.mjs
 
 详细部署步骤见 [`部署教程.md`](./部署教程.md)。
 
-GitHub Actions 中建议配置的 OpenAI 模型 Secrets：
+### GitHub Actions Secrets 配置
+
+`daily-report.yml` 会从 GitHub Secrets 读取运行时配置，并临时生成 `.tmp/github-actions/search.json` 和 `.tmp/github-actions/openclaw.json`。这些文件只在 Actions runner 内使用，不应提交到仓库。
+
+#### Grok 抓取配置
+
+```text
+GROK_API_KEY = <Grok 或中转站提供的 API Key>
+GROK_BASE_URL = https://api.x.ai/v1
+GROK_MODEL = grok-4.1-fast
+```
+
+- `GROK_API_KEY`：用于抓取推文的 Grok 兼容接口密钥。
+- `GROK_BASE_URL`：Grok 兼容接口地址。workflow 会用它探测 `/models`，如果没有写 `/v1`，会在探测时补成 `/v1`。
+- `GROK_MODEL`：抓取阶段模型 ID。留空时默认优先使用 `grok-4.1-fast`，并在可用模型中回退选择。
+
+#### OpenAI-compatible 分析配置
+
+如果使用 AnyRouter 这类中转站，地址应写在 `OPENAI_BASE_URL`，模型 ID 才写在 `OPENAI_*_MODEL`：
+
+```text
+OPENAI_API_KEY = <中转站或 OpenAI-compatible 服务的 API Key>
+OPENAI_BASE_URL = https://anyrouter.top/v1
+OPENAI_BRIEF_MODEL = gpt-5.4
+OPENAI_BRIEF_FALLBACK_MODEL = gpt-5.4-mini
+OPENAI_SCREENING_MODEL = gpt-5.4-mini
+OPENAI_ROSTER_MODEL = gpt-5.4-mini
+```
+
+变量含义：
+
+- `OPENAI_API_KEY`：分析链路使用的 API Key。它必须和 `OPENAI_BASE_URL` 指向的服务匹配。
+- `OPENAI_BASE_URL`：OpenAI-compatible API 地址，例如 `https://anyrouter.top/v1`。脚本会在该地址后请求 `/responses`，所以最终请求会到 `https://anyrouter.top/v1/responses`。
+- `OPENAI_BRIEF_MODEL`：终稿日报主模型，只能填模型 ID，例如 `gpt-5.4`。
+- `OPENAI_BRIEF_FALLBACK_MODEL`：终稿主模型失败后的 fallback 模型，例如 `gpt-5.4-mini`。
+- `OPENAI_SCREENING_MODEL`：高价值推文筛选模型，例如 `gpt-5.4-mini`。
+- `OPENAI_ROSTER_MODEL`：账号评分模型，例如 `gpt-5.4-mini`。
+
+不要这样配置：
+
+```text
+OPENAI_BRIEF_MODEL = https://anyrouter.top/v1
+```
+
+`OPENAI_BRIEF_MODEL` 不是中转站 API 地址。把 URL 填进模型变量后，workflow 会把它当成模型 ID 写入配置，最终模型请求会变成“用名为 `https://anyrouter.top/v1` 的模型生成日报”，这通常会导致模型不可用、请求失败或 fallback 报告。
+
+如果这些模型 Secrets 留空，workflow 会使用下面的低成本默认值：
 
 ```text
 OPENAI_BRIEF_MODEL = gpt-5.4
@@ -306,7 +352,34 @@ OPENAI_SCREENING_MODEL = gpt-5.4-mini
 OPENAI_ROSTER_MODEL = gpt-5.4-mini
 ```
 
-如果这些 Secrets 留空，workflow 会使用上面的低成本默认值。
+如果公开报告中出现：
+
+```text
+401 Invalid API key，请检查模型可用性
+```
+
+优先检查：
+
+1. `OPENAI_API_KEY` 是否填写、是否过期、是否属于 `OPENAI_BASE_URL` 对应的中转站。
+2. `OPENAI_BASE_URL` 是否正确，例如 AnyRouter 应是 `https://anyrouter.top/v1`，不要填到模型变量里。
+3. `OPENAI_BRIEF_MODEL`、`OPENAI_BRIEF_FALLBACK_MODEL`、`OPENAI_SCREENING_MODEL`、`OPENAI_ROSTER_MODEL` 是否是该中转站实际支持的模型 ID。
+4. 中转站控制台里该模型是否启用、余额是否充足、账号是否有调用权限。
+5. GitHub Actions 日志里的 `Using OPENAI_*_RUNTIME_MODEL=...` 是否显示了预期模型 ID。
+
+#### Cloudflare R2 与 Worker 发布配置
+
+```text
+R2_ACCOUNT_ID = <Cloudflare account id>
+R2_ACCESS_KEY_ID = <R2 access key id>
+R2_SECRET_ACCESS_KEY = <R2 secret access key>
+R2_BUCKET_NAME = <R2 bucket name>
+CLOUDFLARE_API_TOKEN = <Cloudflare API token>
+CLOUDFLARE_ACCOUNT_ID = <Cloudflare account id>
+```
+
+- `R2_*`：用于把 `final.html`、`final.md`、`latest.json`、`maintenance.json` 等产物上传到 R2。
+- `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`：用于部署或更新 Cloudflare Worker。
+- workflow 会同时把 `R2_ACCESS_KEY_ID` 和 `R2_SECRET_ACCESS_KEY` 映射成 AWS CLI 需要的 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`。
 
 ## OpenClaw 使用方式
 
