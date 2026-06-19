@@ -333,17 +333,20 @@ jobs:
           const issue = analyze.modelAvailabilityIssue ?? null;
           const source = analyze.answerSource ?? null;
           const degraded = analyze.finalDraftDegraded === true;
+          // 先按终稿落地结果分流：fallback_model 仍产出了可用正文，
+          // 不能因为 primary 401 就误报“终稿模型不可用”。issue 详情并入对应消息。
+          const issueSuffix = issue ? `（${issue}；请检查 new-api 上游渠道密钥是否失效）` : '';
 
-          if (issue) {
-            console.log(`::error title=终稿模型不可用::${issue}（请检查 new-api 上游渠道密钥是否失效）`);
-            process.exit(1);
-          }
           if (source === 'fallback') {
-            console.log('::error title=终稿降级::终稿模型未产出可用正文，已退化为本地结构化兜底，请检查模型供应链。');
+            console.log(`::error title=终稿降级::终稿模型未产出可用正文，已退化为本地结构化兜底，请检查模型供应链。${issueSuffix}`);
             process.exit(1);
           }
           if (source === 'fallback_model') {
-            console.log('::error title=终稿降级::主终稿模型失败，本稿由 fallback 模型生成，请检查模型供应链。');
+            console.log(`::error title=终稿降级::主终稿模型失败，本稿由 fallback 模型生成，请检查模型供应链。${issueSuffix}`);
+            process.exit(1);
+          }
+          if (issue) {
+            console.log(`::error title=终稿模型可用性异常::${issue}（请检查 new-api 上游渠道密钥是否失效）`);
             process.exit(1);
           }
           if (degraded && source !== 'model') {

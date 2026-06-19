@@ -75,3 +75,36 @@ test('daily-report workflow fails when final draft uses fallback model', async (
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test('daily-report gate keeps fallback_model accurate when primary hit a 401', async () => {
+  const workflow = await readUtf8('../.github/workflows/daily-report.yml');
+  const script = extractFinalDraftGateScript(workflow);
+  const tempDir = await mkdtemp(join(tmpdir(), 'x-monitor-gate-'));
+  try {
+    await mkdir(join(tempDir, '.tmp', 'github-actions'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.tmp', 'github-actions', 'run-summary.json'),
+      JSON.stringify({
+        analyze: {
+          answerSource: 'fallback_model',
+          finalDraftDegraded: true,
+          modelAvailabilityIssue: '401 Invalid API key，请检查模型可用性',
+        },
+      }),
+    );
+
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+      cwd: tempDir,
+      encoding: 'utf8',
+    });
+
+    // primary 401 但 fallback 成功出稿：仍以退出码标红降级，
+    // 但消息必须准确反映“fallback 生成”，不得误报“终稿模型不可用”。
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /本稿由 fallback 模型生成/);
+    assert.match(result.stdout, /401 Invalid API key/);
+    assert.doesNotMatch(result.stdout, /终稿模型不可用/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
