@@ -118,8 +118,8 @@ jobs:
 
           OPENAI_BRIEF_RUNTIME_MODEL="$(node --input-type=module - <<'EOF'
           const normalized = String(process.env.OPENAI_BRIEF_MODEL ?? '').trim();
-          if (!normalized || /^gpt-5\.4(?:-?xhigh|\(xhigh\)|-high)$/i.test(normalized)) {
-            process.stdout.write('gpt-5.4');
+          if (!normalized || /^gpt-5\.4(?:-?xhigh|\(xhigh\)|-high)?$/i.test(normalized)) {
+            process.stdout.write('gpt-5.5');
           } else {
             process.stdout.write(normalized);
           }
@@ -186,8 +186,8 @@ jobs:
           const config = JSON.parse(readFileSync('config.example.json', 'utf8'));
           const normalizeBriefModel = (value) => {
             const normalized = String(value ?? '').trim();
-            if (!normalized) return 'gpt-5.4';
-            if (/^gpt-5\.4(?:-?xhigh|\(xhigh\)|-high)$/i.test(normalized)) return 'gpt-5.4';
+            if (!normalized) return 'gpt-5.5';
+            if (/^gpt-5\.4(?:-?xhigh|\(xhigh\)|-high)?$/i.test(normalized)) return 'gpt-5.5';
             return normalized;
           };
           const briefModelId = normalizeBriefModel(process.env.OPENAI_BRIEF_MODEL);
@@ -314,3 +314,35 @@ jobs:
         shell: bash
         run: |
           npx --yes wrangler deploy --config worker/wrangler.generated.toml
+
+      # 终稿降级门禁：报告与状态已发布，仅以退出码反映模型健康状态，
+      # 避免“终稿模型 401 / 全量降级”被静默标记为 success。
+      - name: Flag degraded final draft
+        shell: bash
+        run: |
+          SUMMARY=".tmp/github-actions/run-summary.json"
+          if [ ! -f "${SUMMARY}" ]; then
+            echo "::warning::run-summary.json 缺失，跳过终稿降级门禁。"
+            exit 0
+          fi
+          node --input-type=module - <<'EOF'
+          import { readFileSync } from 'node:fs';
+
+          const summary = JSON.parse(readFileSync('.tmp/github-actions/run-summary.json', 'utf8'));
+          const analyze = summary.analyze ?? {};
+          const issue = analyze.modelAvailabilityIssue ?? null;
+          const source = analyze.answerSource ?? null;
+
+          if (issue) {
+            console.log(`::error title=终稿模型不可用::${issue}（请检查 new-api 上游渠道密钥是否失效）`);
+            process.exit(1);
+          }
+          if (source === 'fallback') {
+            console.log('::error title=终稿降级::终稿模型未产出可用正文，已退化为本地结构化兜底，请检查模型供应链。');
+            process.exit(1);
+          }
+          if (source === 'fallback_model') {
+            console.log('::warning title=终稿降级::主终稿模型失败，本稿由 fallback 模型生成。');
+          }
+          console.log(`Final draft healthy: answerSource=${source ?? 'unknown'}.`);
+          EOF

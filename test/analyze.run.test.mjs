@@ -102,6 +102,9 @@ test('runAnalyze smoke consumes tweet evidence and writes analyze artifacts plus
     assert.equal(analyzeResult.quality.needsReview, false);
     assert.equal(analyzeSummary.finalDraftDurationMs, analyzeResult.meta.finalDraftDurationMs);
     assert.equal(analyzeSummary.analyzeDurationMs, analyzeResult.meta.analyzeDurationMs);
+    assert.equal(analyzeSummary.answerSource, 'model');
+    assert.equal(analyzeSummary.modelAvailabilityIssue, null);
+    assert.equal(analyzeSummary.finalDraftDegraded, false);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
     assert.equal(finalReport, FIXTURE_ANALYZE_MARKDOWN);
@@ -810,6 +813,9 @@ test('runAnalyze shows a clear model availability hint when final draft auth fai
     const analyzeResult = await readJson(analyzeSummary.analyzeResultPath);
     assert.equal(analyzeResult.answer.source, 'fallback');
     assert.equal(analyzeResult.meta.modelAvailabilityIssue, '401 Invalid API key，请检查模型可用性');
+    assert.equal(analyzeSummary.answerSource, 'fallback');
+    assert.equal(analyzeSummary.modelAvailabilityIssue, '401 Invalid API key，请检查模型可用性');
+    assert.equal(analyzeSummary.finalDraftDegraded, true);
 
     const finalReport = await readText(analyzeSummary.finalReportPath);
     assert.match(finalReport, /401 Invalid API key，请检查模型可用性/);

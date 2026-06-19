@@ -1621,6 +1621,9 @@ async function finalizeAnalyzeRun({
     rosterScoring,
     finalDraftDurationMs: continuationResult.durationMs,
     finalDraftAttempts,
+    answerSource,
+    modelAvailabilityIssue,
+    finalDraftDegraded: answerSource !== 'model',
     analyzeDurationMs,
   };
 }

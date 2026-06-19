@@ -80,7 +80,7 @@
         "apiProtocol": "openai-compatible",
         "timeoutMs": 480000,
         "retry": {
-          "maxAttempts": 2,
+          "maxAttempts": 4,
           "backoffMs": 2500
         },
         "concurrency": 1,
@@ -168,7 +168,7 @@
   "models": {
     "gpt-main": {
       "providerRef": "gpt",
-      "modelId": "gpt-5.4",
+      "modelId": "gpt-5.5",
       "reasoningEffort": "high"
     },
     "gpt-main-mini": {
