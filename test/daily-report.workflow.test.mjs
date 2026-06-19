@@ -1,10 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 async function readUtf8(relativePath) {
   return readFile(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8');
+}
+
+function extractFinalDraftGateScript(workflow) {
+  const gateStart = workflow.indexOf('- name: Flag degraded final draft');
+  assert.notEqual(gateStart, -1);
+  const gateWorkflow = workflow.slice(gateStart);
+  const scriptMatch = gateWorkflow.match(/node --input-type=module - <<'EOF'\r?\n([\s\S]*?)\r?\n\s+EOF/);
+  assert.ok(scriptMatch, 'final draft gate script should be present');
+  return scriptMatch[1]
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^ {10}/, ''))
+    .join('\n');
 }
 
 test('daily-report workflow keeps live fetch overrides bounded for GitHub Actions', async () => {
@@ -36,4 +51,27 @@ test('daily-report workflow defaults lower-cost GPT stages unless secrets overri
   assert.match(workflow, /OPENAI_BRIEF_FALLBACK_MODEL \?\? ''\)\.trim\(\) \|\| 'gpt-5\.4-mini'/);
   assert.match(workflow, /OPENAI_SCREENING_MODEL \?\? ''\)\.trim\(\) \|\| 'gpt-5\.4-mini'/);
   assert.match(workflow, /OPENAI_ROSTER_MODEL \?\? ''\)\.trim\(\) \|\| 'gpt-5\.4-mini'/);
+});
+
+test('daily-report workflow fails when final draft uses fallback model', async () => {
+  const workflow = await readUtf8('../.github/workflows/daily-report.yml');
+  const script = extractFinalDraftGateScript(workflow);
+  const tempDir = await mkdtemp(join(tmpdir(), 'x-monitor-gate-'));
+  try {
+    await mkdir(join(tempDir, '.tmp', 'github-actions'), { recursive: true });
+    await writeFile(
+      join(tempDir, '.tmp', 'github-actions', 'run-summary.json'),
+      JSON.stringify({ analyze: { answerSource: 'fallback_model' } }),
+    );
+
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+      cwd: tempDir,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /终稿降级/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

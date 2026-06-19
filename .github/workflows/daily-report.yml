@@ -332,6 +332,7 @@ jobs:
           const analyze = summary.analyze ?? {};
           const issue = analyze.modelAvailabilityIssue ?? null;
           const source = analyze.answerSource ?? null;
+          const degraded = analyze.finalDraftDegraded === true;
 
           if (issue) {
             console.log(`::error title=终稿模型不可用::${issue}（请检查 new-api 上游渠道密钥是否失效）`);
@@ -342,7 +343,12 @@ jobs:
             process.exit(1);
           }
           if (source === 'fallback_model') {
-            console.log('::warning title=终稿降级::主终稿模型失败，本稿由 fallback 模型生成。');
+            console.log('::error title=终稿降级::主终稿模型失败，本稿由 fallback 模型生成，请检查模型供应链。');
+            process.exit(1);
+          }
+          if (degraded && source !== 'model') {
+            console.log(`::error title=终稿降级::终稿 answerSource=${source ?? 'unknown'}，请检查模型供应链。`);
+            process.exit(1);
           }
           console.log(`Final draft healthy: answerSource=${source ?? 'unknown'}.`);
           EOF
